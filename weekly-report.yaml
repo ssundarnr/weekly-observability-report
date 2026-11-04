@@ -1,0 +1,472 @@
+name: weekly-observability-report
+description: Weekly observability report with health summary and Autopilot causes
+workflowInputs:
+  destinationId:
+    type: String
+    required: false
+    defaultValue: 'REPLACE_WITH_EMAIL_DESTINATION_ID'
+  errRedPct:
+    type: String
+    required: false
+    defaultValue: '5'
+  errAmberPct:
+    type: String
+    required: false
+    defaultValue: '1'
+  p95IncreasePct:
+    type: String
+    required: false
+    defaultValue: '20'
+  minRequests:
+    type: String
+    required: false
+    defaultValue: '100'
+  hostAmberPct:
+    type: String
+    required: false
+    defaultValue: '85'
+  hostRedPct:
+    type: String
+    required: false
+    defaultValue: '95'
+  synthAmberPct:
+    type: String
+    required: false
+    defaultValue: '5'
+  synthRedPct:
+    type: String
+    required: false
+    defaultValue: '50'
+  sloAmberBudgetPct:
+    type: String
+    required: false
+    defaultValue: '25'
+
+steps:
+  - name: q_inc_crit
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = ''critical'' AND event IN (''open'',''close'') FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = ''open'') AS openNow SINCE 7 days ago'
+      selectors:
+        - name: d
+          expression: '.results[0] // {total: 0, openNow: 0}'
+  - name: q_inc_warn
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = ''warning'' AND event IN (''open'',''close'') FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = ''open'') AS openNow SINCE 7 days ago'
+      selectors:
+        - name: d
+          expression: '.results[0] // {total: 0, openNow: 0}'
+  - name: q_inc_opened
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM NrAiIncident SELECT filter(count(*), WHERE event = ''open'') AS opened FACET priority SINCE 7 days ago COMPARE WITH 1 week ago'
+      selectors:
+        - name: d
+          expression: '.results | map({p: .priority, c: .comparison, o: .opened})'
+  - name: q_inc_open_rows
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent, min(openTime) AS openedAt, latest(title) AS title, latest(entity.name) AS entityName WHERE priority = ''critical'' AND event IN (''open'',''close'') FACET incidentId LIMIT MAX) SELECT latest(title) AS title, latest(entityName) AS entityName, min(openedAt) AS openedAt WHERE lastEvent = ''open'' FACET incidentId LIMIT 1000 SINCE 7 days ago'
+      selectors:
+        - name: d
+          expression: '.results | map(select(.openedAt != null)) | sort_by(.openedAt) | {n: length, t: (.[:10] | map({t: ((.title // "untitled") | .[0:160]), e: ((.entityName // "unknown") | .[0:60]), o: .openedAt}))}'
+  - name: q_counts
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'SELECT count(*) FROM NrAiIncident, Transaction, SystemSample, SyntheticCheck, ServiceLevelSnapshot FACET eventType() SINCE 7 days ago'
+      selectors:
+        - name: d
+          expression: '.results | map({(.["eventType()"]): .count}) | add // {}'
+  - name: q_apm
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM Transaction SELECT count(*) AS reqs, percentage(count(*), WHERE error IS true) AS errPct, percentile(duration, 95) AS p95 FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | (map(select(.comparison == "previous"))) as $pr | (map(select(.comparison != "previous"))) as $cr | ($pr | map({key: .appName, value: .}) | from_entries) as $pm | ($cr | map({a: (.appName | .[0:36]), r: ((.reqs // 0) | round), e: (((.errPct // 0) * 100 | round) / 100), p: ((((.p95["95"] // 0) * 10000) | round) / 10), q: (($pm[.appName].p95["95"] // null) | if . == null then null else ((. * 10000 | round) / 10) end), pr: (($pm[.appName].reqs // 0) | round)})) as $it | {n: ($it | length), e: ($it | sort_by(-.e) | .[:12]), l: ($it | sort_by(-.p) | .[:5]), pv: ($pr | sort_by(-(.errPct // 0)) | .[:12] | map([((.reqs // 0) | round), (((.errPct // 0) * 100 | round) / 100)]))}'
+  - name: q_hosts
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM SystemSample SELECT max(cpuPercent), max(memoryUsedPercent), max(diskUsedPercent) FACET hostname SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | (map(select(.comparison == "previous"))) as $pr | (map(select(.comparison != "previous"))) as $cr | ($cr | map(. + {pk: ([(.["max.cpuPercent"] // 0), (.["max.memoryUsedPercent"] // 0), (.["max.diskUsedPercent"] // 0)] | max)})) as $c | ($pr | map([(.["max.cpuPercent"] // 0), (.["max.memoryUsedPercent"] // 0), (.["max.diskUsedPercent"] // 0)] | max | round) | sort | reverse | .[:15]) as $pp | {n: ($c | length), pp: $pp, peaks: ($c | map(.pk | round) | sort | reverse | .[:15]), top: ($c | sort_by(-.pk) | .[:5] | map({h: (.hostname | .[0:30]), u: ((.["max.cpuPercent"] // 0) | round), m: ((.["max.memoryUsedPercent"] // 0) | round), d: ((.["max.diskUsedPercent"] // 0) | round)}))}'
+  - name: q_synth_overall
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM SyntheticCheck SELECT count(*) AS checks, percentage(count(*), WHERE result = ''FAILED'') AS failPct SINCE 7 days ago COMPARE WITH 1 week ago'
+      selectors:
+        - name: d
+          expression: '.results | map({c: .comparison, f: (((.failPct // 0) * 100 | round) / 100)})'
+  - name: q_synth_monitors
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM SyntheticCheck SELECT percentage(count(*), WHERE result = ''FAILED'') AS failPct, count(*) AS checks FACET monitorName SINCE 7 days ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | {n: length, top: (sort_by(-(.failPct // 0)) | .[:10] | map({m: ((.monitorName // "unnamed") | .[0:40]), f: (((.failPct // 0) * 100 | round) / 100), n: (.checks | round)}))}'
+  - name: q_sls
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM ServiceLevelSnapshot SELECT latest(remainingErrorBudget) AS budget, latest(entity.name) AS name FACET entity.guid SINCE 1 day ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | map(select(.budget != null)) | {n: length, low: (sort_by(.budget) | .[:8] | map({n: ((.name // "unnamed") | .[0:50]), b: (.budget | round)}))}'
+  - name: sa
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        I = json.loads(${{ {now: now, c: .steps.q_inc_crit.outputs.d, w: .steps.q_inc_warn.outputs.d, o: .steps.q_inc_opened.outputs.d, t: .steps.q_inc_open_rows.outputs.d} | tojson | tojson }})
+        NOW = int(float(I["now"]) * 1000)
+
+
+        def ft(ms):
+            s = int(ms // 1000)
+            d, r = divmod(s, 86400)
+            z = d + 719468
+            e = z // 146097
+            q = z - e * 146097
+            y = (q - q // 1460 + q // 36524 - q // 146096) // 365
+            k = q - (365 * y + y // 4 - y // 100)
+            m = (5 * k + 2) // 153
+            day = k - (153 * m + 2) // 5 + 1
+            mo = m + 3 if m < 10 else m - 9
+            return "%04d-%02d-%02d %02d:%02d UTC" % (y + e * 400 + (mo <= 2), mo, day, r // 3600, r % 3600 // 60)
+
+
+        def age(ms):
+            h = max(0, (NOW - ms) / 3600000.0)
+            return "%.1f days" % (h / 24) if h >= 48 else "%.0f hours" % h
+
+
+        def opened(p, prev):
+            return int(sum(float(r["o"] or 0) for r in I["o"] if r["p"] == p and (r["c"] == "previous") == prev))
+
+
+        c, w = I["c"], I["w"]
+        cn, wn = int(c.get("openNow") or 0), int(w.get("openNow") or 0)
+        co, cp, wo, wp = opened("critical", False), opened("critical", True), opened("warning", False), opened("warning", True)
+        cut = (c.get("total") or 0) >= 5000 or (w.get("total") or 0) >= 5000
+        top = [{"t": r["t"], "e": r["e"], "o": ft(r["o"]), "a": age(r["o"])} for r in I["t"]["t"]]
+        ctx = ["Critical alert event, open since %s (%s). Entity: %s. Title: %s" % (x["o"], x["a"], x["e"], x["t"])
+               for x in top[:3]]
+        ctx += ["No further critical alert event is open."] * (3 - len(ctx))
+        print(json.dumps({
+            "gen": ft(NOW),
+            "area": {"key": "incidents", "name": "Alert events",
+                     "status": "RED" if cn else "AMBER" if co or wn else "GREEN",
+                     "headline": "%d critical open now, %d warning open now" % (cn, wn),
+                     "delta": "critical opened %d (prev %d), warning opened %d (prev %d)" % (co, cp, wo, wp),
+                     "rows": [], "refs": ["inc_crit", "inc_warn", "inc_opened", "inc_open_rows"]},
+            "gaps": ["Alert events: the per-event query hit its 5000-row cap, so open counts are lower bounds."] if cut else [],
+            "ctx": ctx, "top": top[:5], "n": I["t"]["n"],
+            "m": {"critOpen": cn, "warnOpen": wn, "critOpened": co}}))
+  - name: sb
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        I = json.loads(${{ {cfg: {minRequests: .workflowInputs.minRequests, errAmberPct: .workflowInputs.errAmberPct, errRedPct: .workflowInputs.errRedPct, p95IncreasePct: .workflowInputs.p95IncreasePct}, ap: .steps.q_apm.outputs.d, ec: .steps.q_counts.outputs.d} | tojson | tojson }})
+        C, A = I["cfg"], I["ap"]
+
+
+        def f(k):
+            return float(C[k])
+
+
+        mr, amb = f("minRequests"), f("errAmberPct")
+        for x in A["e"] + A["l"]:
+            x["slow"] = bool(x["r"] >= mr and x["q"] and x["pr"] >= mr and x["p"] > x["q"] * (1 + f("p95IncreasePct") / 100.0))
+        rows = [x for x in A["e"] + A["l"] if x["r"] >= mr]
+        red = [x for x in rows if x["e"] > f("errRedPct")]
+        amber = [x for x in rows if x["e"] > amb or x["slow"]]
+        if not I["ec"].get("Transaction"):
+            st = "NODATA"
+        else:
+            st = "RED" if red else "AMBER" if amber else "GREEN"
+        over = len([x for x in A["e"] if x["r"] >= mr and x["e"] > amb])
+        prev = len([p for p in A["pv"] if p[0] >= mr and p[1] > amb])
+        te = sorted([x for x in A["e"] if x["r"] >= mr], key=lambda x: -x["e"])[:3]
+        tp = sorted(A["l"], key=lambda x: -x["p"])[:3]
+        lines = ["Top errors: %s %.2f%% (%d requests)" % (x["a"], x["e"], x["r"]) for x in te]
+        lines += ["Top p95: %s %.0f ms%s" % (x["a"], x["p"], ", slower than last week" if x["slow"] else "") for x in tp]
+        cut = len(A["e"]) >= 12 and A["e"][-1]["e"] > amb
+        print(json.dumps({
+            "area": {"key": "apm", "name": "APM services", "status": st,
+                     "headline": "%d of %d services above %s%% errors" % (over, A["n"], C["errAmberPct"]),
+                     "delta": "services above %s%% errors: %d (prev %d)" % (C["errAmberPct"], over, prev),
+                     "rows": [lines[0]] + lines[len(te):len(te) + 1] if lines else [], "refs": ["apm"]},
+            "gaps": (["APM: no Transaction events in the Report Window."] if st == "NODATA" else [])
+                    + (["APM: more than 12 services are above the amber error rate; counts are lower bounds."] if cut else []),
+            "ctx": ["APM: " + " | ".join(lines or ["no data"])],
+            "m": {"apmWorstErrPct": max([x["e"] for x in rows] or [0]), "apmServicesOverErr": over}}))
+  - name: sc
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        I = json.loads(${{ {cfg: {hostAmberPct: .workflowInputs.hostAmberPct, hostRedPct: .workflowInputs.hostRedPct, synthAmberPct: .workflowInputs.synthAmberPct, synthRedPct: .workflowInputs.synthRedPct, sloAmberBudgetPct: .workflowInputs.sloAmberBudgetPct}, ec: .steps.q_counts.outputs.d, h: .steps.q_hosts.outputs.d, so: .steps.q_synth_overall.outputs.d, sm: .steps.q_synth_monitors.outputs.d, sl: .steps.q_sls.outputs.d} | tojson | tojson }})
+        C, EC = I["cfg"], I["ec"]
+
+
+        def f(k):
+            return float(C[k])
+
+
+        def pct(x):
+            return "%.2f%%" % x
+
+
+        areas, gaps = [], []
+        # Hosts
+        H = I["h"]
+        hs = "NODATA" if not EC.get("SystemSample") else "GREEN"
+        if hs != "NODATA" and H["peaks"]:
+            hs = "RED" if H["peaks"][0] > f("hostRedPct") else "AMBER" if H["peaks"][0] > f("hostAmberPct") else "GREEN"
+        ho = len([p for p in H["peaks"] if p > f("hostAmberPct")])
+        hp = len([p for p in H["pp"] if p > f("hostAmberPct")])
+        hl = ["%s: cpu %d%%, memory %d%%, disk %d%%" % (x["h"], x["u"], x["m"], x["d"]) for x in H["top"]]
+        areas.append({"key": "hosts", "name": "Hosts", "status": hs,
+                      "headline": "%d of %d hosts peaked above %s%%" % (ho, H["n"], C["hostAmberPct"]),
+                      "delta": "hosts above %s%%: %d (prev %d)" % (C["hostAmberPct"], ho, hp), "rows": hl[:3], "refs": ["hosts"]})
+        # Synthetics
+        S, M = I["so"], I["sm"]
+        ss = "NODATA" if not EC.get("SyntheticCheck") else "GREEN"
+        if ss != "NODATA" and M["top"]:
+            ss = "RED" if M["top"][0]["f"] > f("synthRedPct") else "AMBER" if M["top"][0]["f"] > f("synthAmberPct") else "GREEN"
+        now = [x["f"] for x in S if x["c"] != "previous"] or [0]
+        was = [x["f"] for x in S if x["c"] == "previous"] or [0]
+        sl = ["%s: %s failed (%d checks)" % (x["m"], pct(x["f"]), x["n"]) for x in M["top"]]
+        areas.append({"key": "synthetics", "name": "Synthetics", "status": ss,
+                      "headline": "overall failure %s across %d monitors" % (pct(now[0]), M["n"]),
+                      "delta": "overall failure %s (prev %s)" % (pct(now[0]), pct(was[0])), "rows": sl[:3],
+                      "refs": ["synth_overall", "synth_monitors"]})
+        # Service levels
+        L = I["sl"]
+        ls = "NODATA" if not EC.get("ServiceLevelSnapshot") else "GREEN"
+        if ls != "NODATA" and L["low"]:
+            ls = "RED" if L["low"][0]["b"] <= 0 else "AMBER" if L["low"][0]["b"] < f("sloAmberBudgetPct") else "GREEN"
+        lo = len([x for x in L["low"] if x["b"] < f("sloAmberBudgetPct")])
+        areas.append({"key": "service_levels", "name": "Service levels", "status": ls,
+                      "headline": "%s of %d below %s%% error budget" % (("%d+" % lo) if lo >= len(L["low"]) else lo, L["n"], C["sloAmberBudgetPct"]),
+                      "delta": "no week-over-week comparison (latest snapshot only)",
+                      "rows": ["%s: %d%% error budget left" % (x["n"], x["b"]) for x in L["low"][:3]], "refs": ["sls"]})
+        for a, ev in (("Hosts", "SystemSample"), ("Synthetics", "SyntheticCheck"), ("Service levels", "ServiceLevelSnapshot")):
+            if not EC.get(ev):
+                gaps.append("%s: no %s events in the Report Window." % (a, ev))
+        print(json.dumps({
+            "areas": areas, "gaps": gaps,
+            "ctx": ["Hosts: " + (" | ".join(hl) or "no data"), "Synthetics: " + (" | ".join(sl) or "no data")],
+            "m": {"hostsOverAmber": ho, "synthFailPct": now[0], "sloMinBudget": L["low"][0]["b"] if L["low"] else -1}}))
+  - name: ask
+    type: action
+    action: newrelic.autopilot.run
+    version: '1'
+    inputs:
+      prompt: '${{ "Write the Probable Causes and Recommended Actions for the weekly observability report on New Relic account " + (.workflowConstants.accountId | tostring) + ". The report''s facts are listed below under FACTS. Cover only the critical alert events alert_event_1 to alert_event_3, and call them alert events, not incidents. Use exactly two plain-text headings: PROBABLE CAUSES and RECOMMENDED ACTIONS. Give each alert event one line per heading. Use only the FACTS and your own NRQL on account " + (.workflowConstants.accountId | tostring) + ", and cite the NRQL behind every number. State the evidence, or write unknown. Never guess. No data is never healthy. If a number in FACTS disagrees with what you find, add a line starting DISAGREEMENT: after the headings. Do not ask questions. If you cannot do the analysis, reply with one line only: NO ANALYSIS: followed by the reason, worded to complete the sentence ''Autopilot gave no analysis because ...''.\n\nFACTS\n" + (["report_window: " + (("7 days ending " + (.steps.sa.outputs.payload | fromjson).gen + ", compared with the 7 days before. Account " + (.workflowConstants.accountId | tostring) + ".") // "none" | tostring | .[0:1000]), "health_summary: " + (("Health summary: " + (([(.steps.sa.outputs.payload | fromjson).area, (.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; "))) // "none" | tostring | .[0:1000]), "alert_event_1: " + (((.steps.sa.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "alert_event_2: " + (((.steps.sa.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "alert_event_3: " + (((.steps.sa.outputs.payload | fromjson).ctx[2]) // "none" | tostring | .[0:1000]), "apm: " + (((.steps.sb.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "hosts: " + (((.steps.sc.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "synthetics: " + (((.steps.sc.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "data_gaps: " + (("Data gaps: " + (((.steps.sa.outputs.payload | fromjson).gaps + (.steps.sb.outputs.payload | fromjson).gaps + (.steps.sc.outputs.payload | fromjson).gaps) | if length == 0 then "none" else join(" ") end)) // "none" | tostring | .[0:1000])] | join("\n")) }}'
+      context:
+        - description: accountId
+          value: '${{ .workflowConstants.accountId | tostring }}'
+      selectors:
+        - name: answer
+          expression: '(.response | objects | .finalAnswer) // (.response | strings) // (.response | tostring)'
+  - name: r1
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        I = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | (.steps.sa.outputs.payload | fromjson) as $a | (.steps.sb.outputs.payload | fromjson) as $b | (.steps.sc.outputs.payload | fromjson) as $c | {a: ([$a.area, $b.area] + $c.areas), g: ($a.gaps + $b.gaps + $c.gaps), t: $a.top, n: $a.n, m: ($a.m + $b.m + $c.m), gen: $a.gen, ok: $ap.ok} | tojson | tojson }})
+        COL = {"RED": "#c62828", "AMBER": "#ef6c00", "GREEN": "#2e7d32", "NODATA": "#757575"}
+        LAB = {"RED": "RED", "AMBER": "AMBER", "GREEN": "GREEN", "NODATA": "NO DATA"}
+        RANK = {"RED": 3, "AMBER": 2, "NODATA": 1, "GREEN": 0}
+        REF = json.loads("{\"inc_crit\": 1, \"inc_warn\": 2, \"inc_opened\": 3, \"inc_open_rows\": 4, \"counts\": 5, \"apm\": 6, \"hosts\": 7, \"synth_overall\": 8, \"synth_monitors\": 9, \"sls\": 10}")
+        A, M = I["a"], I["m"]
+        overall = max([a["status"] for a in A], key=lambda s: RANK[s])
+        TD = "<td style='padding:6px;border-bottom:1px solid #eee;vertical-align:top'>"
+
+
+        def esc(t):
+            return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+        def badge(s):
+            return ("<span style='background:%s;color:#fff;padding:2px 8px;border-radius:3px;font-weight:bold;"
+                    "font-size:12px'>%s</span>" % (COL[s], LAB[s]))
+
+
+        def h2(t):
+            return "<h2 style='font-size:16px;margin:22px 0 6px;border-bottom:1px solid #ddd'>%s</h2>" % esc(t)
+
+
+        def pre(t):
+            return "<div style='white-space:pre-wrap;font-size:13px;line-height:1.45'>%s</div>" % esc(t)
+
+
+        def refs(keys):
+            return ", ".join("[%d]" % REF[k] for k in keys if k in REF)
+
+
+        rows = ""
+        for a in A:
+            sub = "".join("<div style='color:#555;font-size:12px'>%s</div>" % esc(r) for r in a["rows"][:3])
+            rows += "<tr>%s<b>%s</b></td>%s%s</td>%s%s%s</td>%s%s</td>%s%s</td></tr>" % (
+                TD, esc(a["name"]), TD, badge(a["status"]), TD, esc(a["headline"]), sub, TD, esc(a["delta"]), TD,
+                esc(refs(a["refs"])))
+        table = ("<table style='border-collapse:collapse;width:100%%;font-size:13px'><tr style='text-align:left;"
+                 "background:#f5f5f5'><th style='padding:6px'>Area</th><th style='padding:6px'>Status</th>"
+                 "<th style='padding:6px'>This week</th><th style='padding:6px'>Week over week</th>"
+                 "<th style='padding:6px'>Source</th></tr>%s</table>" % rows)
+        lines = ["%d critical alert event(s) open now; %d opened this week; %d warning open now. %s" % (
+            M["critOpen"], M["critOpened"], M["warnOpen"], refs(["inc_crit", "inc_opened"]))]
+        lines += ["Open since %s (%s): %s, %s" % (t["o"], t["a"], t["e"], t["t"]) for t in I["t"]]
+        if I["n"] > len(I["t"]):
+            lines.append("(%d more open critical alert events not listed. %s)" % (I["n"] - len(I["t"]), refs(["inc_open_rows"])))
+        lines.append("Alert events that opened before the 7-day window and are still open are not counted.")
+        head = ("<div style='font-family:Arial,Helvetica,sans-serif;max-width:860px;color:#222'>"
+                "<h1 style='font-size:20px;margin:0 0 4px'>Weekly observability report</h1>"
+                "<div style='font-size:12px;color:#555'>Generated %s. Overall: %s</div>%s%s" % (
+                    esc(I["gen"]), badge(overall), h2("1. Health summary") + table,
+                    h2("2. Critical alert events") + pre("\n".join(lines))))
+        tail = h2("4. Data gaps") + pre("\n".join(I["g"]) if I["g"] else "None. Every health area returned data.")
+        attrs = {"overall": overall, "generatedAt": I["gen"], "autopilotOk": str(I["ok"]).lower() == "true",
+                 "gapCount": len(I["g"])}
+        attrs.update(M)
+        for a in A:
+            attrs["status_" + a["key"]] = a["status"]
+        print(json.dumps({
+            "head": head, "tail": tail, "overall": overall,
+            "subject": "[%s] Weekly observability report, %s" % (LAB[overall], I["gen"][:10]),
+            "events": [dict(attrs, eventType="WeeklyObservabilityReport")]}))
+  - name: md
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        T = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | $ap.text as $t | ([8000, 7000, 6000, 5000, 4000, 3000, 2000] | map(. as $n | $t | .[0:$n]) | map(select(tojson | tojson | length <= 7461)) | .[0]) // ($t | .[0:1500]) | if length < ($t | length) then . + "\n\n(Autopilot's reply was cut to fit the email.)" else . end | tojson | tojson }})
+        TD = "border:1px solid #ddd;padding:4px 6px;text-align:left;vertical-align:top"
+        out, blk = [], {"k": None, "rows": []}
+
+
+        def pairs(t, mark, wrap):
+            p = t.split(mark)
+            if len(p) % 2 == 0:
+                p[-2] += mark + p.pop()
+            return "".join(wrap % x if i % 2 else x for i, x in enumerate(p))
+
+
+        def inline(t):
+            t = t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return pairs(pairs(t, "`", "<code style='background:#f3f3f3;padding:0 3px'>%s</code>"), "**", "<b>%s</b>")
+
+
+        def table(rows):
+            cells = [[c.strip() for c in r.strip("|").split("|")] for r in rows]
+            cells = [c for c in cells if not all(x and set(x) <= set("-: ") for x in c)]
+            html = ""
+            for i, c in enumerate(cells):
+                tag = "th" if i == 0 else "td"
+                html += "<tr>%s</tr>" % "".join("<%s style='%s'>%s</%s>" % (tag, TD, inline(x), tag) for x in c)
+            return "<table style='border-collapse:collapse;font-size:12px;margin:6px 0'>%s</table>" % html
+
+
+        def flush():
+            k, rows = blk["k"], blk["rows"]
+            if k == "p":
+                out.append("<p style='margin:6px 0'>%s</p>" % "<br>".join(inline(r) for r in rows))
+            elif k in ("ul", "ol"):
+                out.append("<%s style='margin:6px 0;padding-left:22px'>%s</%s>" % (k, "".join("<li>%s</li>" % inline(r) for r in rows), k))
+            elif k == "t":
+                out.append(table(rows))
+            blk["k"], blk["rows"] = None, []
+
+
+        for line in T.split("\n"):
+            s = line.strip()
+            n = len(s) - len(s.lstrip("#"))
+            if 1 <= n <= 6 and s[n:n + 1] == " ":
+                flush()
+                out.append("<div style='font-weight:bold;font-size:%dpx;margin:12px 0 4px'>%s</div>" % (max(16 - n, 13), inline(s[n + 1:])))
+                continue
+            if s in ("---", "***", "___"):
+                flush()
+                out.append("<hr style='border:0;border-top:1px solid #eee'>")
+                continue
+            if not s:
+                flush()
+                continue
+            if s.startswith("|"):
+                k, v = "t", s
+            elif s[:2] in ("- ", "* ", "• "):
+                k, v = "ul", s[2:]
+            elif ". " in s and s.split(". ", 1)[0].isdigit():
+                k, v = "ol", s.split(". ", 1)[1]
+            else:
+                k, v = "p", s
+            if blk["k"] != k:
+                flush()
+                blk["k"] = k
+            blk["rows"].append(v)
+        flush()
+        print("".join(out))
+  - name: email
+    type: action
+    action: newrelic.notification.sendEmail
+    version: '1'
+    inputs:
+      destinationId: '${{ .workflowInputs.destinationId }}'
+      subject: '${{ (.steps.r1.outputs.payload | fromjson).subject }}'
+      message: '${{ (.steps.r1.outputs.payload | fromjson) as $r | $r.head + "<h2 style=''font-size:16px;margin:22px 0 6px;border-bottom:1px solid #ddd''>3. Probable causes and recommended actions (Autopilot)</h2><div style=''font-size:13px;line-height:1.45''>" + .steps.md.outputs.payload + "</div>" + $r.tail + "<h2 style=''font-size:14px;margin:22px 0 4px''>Sources (NRQL behind every number)</h2><div style=''font-size:11px;color:#555;margin:2px 0''>[1] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[2] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;warning&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[3] FROM NrAiIncident SELECT filter(count(*), WHERE event = &#x27;open&#x27;) AS opened FACET priority SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[4] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent, min(openTime) AS openedAt, latest(title) AS title, latest(entity.name) AS entityName WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT latest(title) AS title, latest(entityName) AS entityName, min(openedAt) AS openedAt WHERE lastEvent = &#x27;open&#x27; FACET incidentId LIMIT 1000 SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[5] SELECT count(*) FROM NrAiIncident, Transaction, SystemSample, SyntheticCheck, ServiceLevelSnapshot FACET eventType() SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[6] FROM Transaction SELECT count(*) AS reqs, percentage(count(*), WHERE error IS true) AS errPct, percentile(duration, 95) AS p95 FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[7] FROM SystemSample SELECT max(cpuPercent), max(memoryUsedPercent), max(diskUsedPercent) FACET hostname SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[8] FROM SyntheticCheck SELECT count(*) AS checks, percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[9] FROM SyntheticCheck SELECT percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct, count(*) AS checks FACET monitorName SINCE 7 days ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[10] FROM ServiceLevelSnapshot SELECT latest(remainingErrorBudget) AS budget, latest(entity.name) AS name FACET entity.guid SINCE 1 day ago LIMIT 100</div></div>" }}'
+  - name: record
+    type: action
+    action: newrelic.ingest.sendEvents
+    version: '1'
+    inputs:
+      events: '${{ (.steps.r1.outputs.payload | fromjson).events }}'
+  - name: save
+    type: state
+    inputs:
+      ask_success: '${{ .steps.ask.outputs.success }}'
+      ask_error: '${{ (.steps.ask.outputs.errorMessage // "") | tostring | .[0:1000] }}'
+      ask_analysed: '${{ (.steps.r1.outputs.payload | fromjson).events[0].autopilotOk }}'
+      email_success: '${{ .steps.email.outputs.success }}'
+      email_error: '${{ (.steps.email.outputs.errorMessage // "") | tostring | .[0:1000] }}'
+      record_success: '${{ .steps.record.outputs.success }}'
+      record_error: '${{ (.steps.record.outputs.errorMessage // "") | tostring | .[0:1000] }}'
+      summary: '${{ ([(.steps.sa.outputs.payload | fromjson).area, (.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; ") }}'

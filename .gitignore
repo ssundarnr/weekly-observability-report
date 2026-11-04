@@ -1,0 +1,4 @@
+__pycache__/
+*.env
+weekly_report_preview.html
+weekly_report_prompt_preview.txt
