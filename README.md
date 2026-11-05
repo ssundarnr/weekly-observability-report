@@ -2,7 +2,7 @@
 
 A New Relic Workflow Automation workflow that emails a weekly health report for one account. It covers which areas are red, amber or green, the critical alert events that are still open, Autopilot's probable causes and recommended actions, and any data gaps. Setup takes about 15 minutes.
 
-## Sneak peek
+## Front page of sample report
 
 ![The weekly report email: header, overall status and the health summary table](docs/report-preview.png)
 
