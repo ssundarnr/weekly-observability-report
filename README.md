@@ -19,7 +19,7 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 
 ## What the email contains
 
-1. **Health summary.** One row per Health Area: Alert events, APM services, Hosts, Synthetics, and Service levels. Each row shows its status, this week's numbers, and the change from last week.
+1. **Health summary.** One row per Health Area: Alert events, Browser, Mobile, APM services, Hosts, Synthetics, and Service levels. Each row shows its status, this week's numbers, and the change from last week. Browser and Mobile appear only if the account has browser or mobile apps.
 2. **Critical alert events.** How many are open now and how many opened this week, plus the longest-open ones.
 3. **Probable causes and recommended actions.** Written by Autopilot for the top 3 open critical alert events, with the evidence it found.
 4. **Data gaps.** Any area whose data source sent nothing this week. NO DATA is never shown as green.
@@ -36,22 +36,24 @@ The statuses come from fixed rules, so the same data always gives the same colou
 | Area | Red | Amber |
 |---|---|---|
 | Alert events | A critical alert event is still open | A critical one opened this week, or a warning one is open |
+| Browser | An app's p75 LCP is above 4 s, INP above 500 ms or CLS above 0.25, or it had more than 25 JavaScript errors per 100 page views | An app's p75 LCP is above 2.5 s, INP above 200 ms or CLS above 0.1, or it had more than 5 JavaScript errors per 100 page views |
+| Mobile | An app crashed in more than 3% of sessions, or more than 20% of its HTTP requests failed | An app crashed in more than 1% of sessions, or more than 5% of its HTTP requests failed |
 | APM services | A service is above 5% errors | A service is above 1% errors, or its p95 is more than 20% slower than last week |
 | Hosts | A host peaked above 95% CPU, memory or disk | A host peaked above 85% |
 | Synthetics | A monitor failed more than 50% of its checks | A monitor failed more than 5% |
 | Service levels | A service level has 0% error budget left | A service level has less than 25% left |
 
-APM services count only if they had at least 100 requests. "Alert events" are the open-to-close records in `NrAiIncident`, which the New Relic alerts UI calls incidents.
+The Browser thresholds are Google's Core Web Vitals cut-offs. APM services count only if they had at least 100 requests. A browser metric counts only if the app had at least 20 samples of it, and a mobile app counts only if it had at least 50 sessions. If the account has browser or mobile apps but they sent no data this week, the area shows NO DATA and appears under data gaps. If the account has no such apps, the area is left out. "Alert events" are the open-to-close records in `NrAiIncident`, which the New Relic alerts UI calls incidents.
 
 ## How the workflow works
 
 ```
-10 queries → 3 scoring scripts → Autopilot → build email → format Autopilot text → send email → save history → save run summary
+14 queries → app lookup → 4 scoring scripts → Autopilot → build email → format Autopilot text → send email → save history → save run summary
 ```
 
-The workflow has 19 steps, which run in order inside New Relic. No server of your own is needed.
+The workflow has 24 steps, which run in order inside New Relic. No server of your own is needed.
 
-**1. Collect the numbers (10 `newrelic.nrdb.query` steps, named `q_…`).** Each step runs one NRQL query over the last 7 days and the 7 days before. A jq selector keeps only the rows needed.
+**1. Collect the numbers (14 `newrelic.nrdb.query` steps, named `q_…`).** Each step runs one NRQL query over the last 7 days and the 7 days before. A jq selector keeps only the rows needed.
 
 | Step | Question it answers |
 |---|---|
@@ -63,11 +65,16 @@ The workflow has 19 steps, which run in order inside New Relic. No server of you
 | `q_hosts` | Which hosts peaked on CPU, memory or disk? |
 | `q_synth_overall`, `q_synth_monitors` | What share of Synthetics checks failed, and which monitors were worst? |
 | `q_sls` | Which service levels are low on error budget? |
+| `q_br`, `q_js` | Which browser apps have slow Core Web Vitals (LCP, INP, CLS at p75), or many JavaScript errors per page view? |
+| `q_mob`, `q_mob_ver` | Which mobile apps crash most, or have failing HTTP requests, and which app version crashed most? |
 
-**2. Score each area (3 `script.run` Python steps).** These apply the rules in the table above. No AI is involved.
+The `apps` step (`newrelic.nerdgraph.execute`) counts the account's browser and mobile apps. That is how the workflow tells "no apps" (area left out) from "apps that sent no data" (a data gap).
+
+**2. Score each area (4 `script.run` Python steps).** These apply the rules in the table above. No AI is involved.
 - `sa`: Alert events, including the 3 longest-open critical ones.
 - `sb`: APM services.
 - `sc`: Hosts, Synthetics, and Service levels.
+- `sd`: Browser and Mobile.
 
 **3. Ask Autopilot why (`ask`, `newrelic.autopilot.run`).**
 - The step sends one prompt containing the health summary and the 3 alert events.
@@ -173,7 +180,7 @@ The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails an
 | To change | Do this |
 |---|---|
 | **The schedule time** | `python weekly_report.py --schedule --cron "30 7 * * 2" --timezone Europe/London --confirm-schedule`. To make it the default, set `NR_REPORT_CRON` and `NR_REPORT_TIMEZONE` in `~/.nr-weekly.env`. The command creates the new schedule, then deletes the old one, because New Relic's API cannot edit a schedule in place. |
-| **The thresholds** | Edit the `defaultValue` of the inputs at the top of `weekly-report.yaml` (for example `errRedPct`, `hostAmberPct`, `synthRedPct`), then run `--deploy` again. |
+| **The thresholds** | Edit the `defaultValue` of the inputs at the top of `weekly-report.yaml` (for example `errRedPct`, `hostAmberPct`, `synthRedPct`, `lcpRedSec`, `crashAmberPct`), then run `--deploy` again. |
 | **Who gets the email** | Use a different `DESTINATION_ID` (a team mailbox works well), then run `--deploy` again. |
 | **After any redeploy** | If a schedule exists, run `--schedule --confirm-schedule` again. A schedule is pinned to one workflow version, so it keeps running the old version until you do. |
 
@@ -198,7 +205,8 @@ At the default `INFO` level the logs only show each step starting and finishing.
 ## Limits to know
 
 - **Old alert events are missed.** Critical alert events that opened more than 7 days ago and are still open are not counted, so "open now" can undercount.
-- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, and 8 service levels. Counts such as "hosts above 85%" are therefore capped at those numbers.
+- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, 6 browser apps by Core Web Vitals samples, 6 by page views, and 6 mobile apps by sessions. Counts such as "hosts above 85%" are therefore capped at those numbers.
+- **Mobile HTTP errors need `MobileRequest` events.** If an app sends errors but no `MobileRequest` events, the email shows the error count instead of a rate.
 - **Autopilot's text varies.** It doesn't always follow the requested format, and it can be wrong. Treat its causes as leads to check, not conclusions.
 - **Charts are dropped.** Autopilot sometimes includes charts, which the email leaves out.
 - **Run cost.** Every run, scheduled or manual, sends an email and uses Autopilot capacity.

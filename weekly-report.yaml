@@ -41,6 +41,62 @@ workflowInputs:
     type: String
     required: false
     defaultValue: '25'
+  lcpAmberSec:
+    type: String
+    required: false
+    defaultValue: '2.5'
+  lcpRedSec:
+    type: String
+    required: false
+    defaultValue: '4'
+  inpAmberMs:
+    type: String
+    required: false
+    defaultValue: '200'
+  inpRedMs:
+    type: String
+    required: false
+    defaultValue: '500'
+  clsAmber:
+    type: String
+    required: false
+    defaultValue: '0.1'
+  clsRed:
+    type: String
+    required: false
+    defaultValue: '0.25'
+  jsErrAmberPct:
+    type: String
+    required: false
+    defaultValue: '5'
+  jsErrRedPct:
+    type: String
+    required: false
+    defaultValue: '25'
+  minBrowserSamples:
+    type: String
+    required: false
+    defaultValue: '20'
+  crashAmberPct:
+    type: String
+    required: false
+    defaultValue: '1'
+  crashRedPct:
+    type: String
+    required: false
+    defaultValue: '3'
+  mobileHttpAmberPct:
+    type: String
+    required: false
+    defaultValue: '5'
+  mobileHttpRedPct:
+    type: String
+    required: false
+    defaultValue: '20'
+  minMobileSessions:
+    type: String
+    required: false
+    defaultValue: '50'
 
 steps:
   - name: q_inc_crit
@@ -133,6 +189,50 @@ steps:
       selectors:
         - name: d
           expression: '.results | map(select(.budget != null)) | {n: length, low: (sort_by(.budget) | .[:8] | map({n: ((.name // "unnamed") | .[0:50]), b: (.budget | round)}))}'
+  - name: q_br
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM PageViewTiming SELECT percentile(largestContentfulPaint, 75) AS lcp, count(largestContentfulPaint) AS nl, percentile(interactionToNextPaint, 75) AS inp, count(interactionToNextPaint) AS ni, percentile(cumulativeLayoutShift, 75) AS cls, count(cumulativeLayoutShift) AS nc FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.nl // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (((.lcp["75"] // 0) * 100 | round) / 100), (.nl // 0), (((.inp["75"] // 0) * 1000) | round), (.ni // 0), ((((.cls["75"] // 0) * 1000) | round) / 1000), (.nc // 0)]))}'
+  - name: q_js
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM PageView, JavaScriptError SELECT filter(count(*), WHERE eventType() = ''PageView'') AS pv, filter(count(*), WHERE eventType() = ''JavaScriptError'') AS jse FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.pv // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.pv // 0), (.jse // 0)]))}'
+  - name: q_mob
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM MobileSession, MobileCrash, MobileRequest, MobileRequestError SELECT filter(count(*), WHERE eventType() = ''MobileSession'') AS sessions, filter(count(*), WHERE eventType() = ''MobileCrash'') AS crashes, filter(count(*), WHERE eventType() = ''MobileRequest'') AS reqs, filter(count(*), WHERE eventType() = ''MobileRequestError'') AS reqErrs FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
+      selectors:
+        - name: d
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.sessions // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}'
+  - name: q_mob_ver
+    type: action
+    action: newrelic.nrdb.query
+    version: '1'
+    inputs:
+      query: 'FROM MobileCrash SELECT count(*) AS crashes FACET appName, appVersion SINCE 7 days ago LIMIT 3'
+      selectors:
+        - name: d
+          expression: '.results | map([((.facet[0] // "unnamed") | tostring | .[0:30]), ((.facet[1] // "unknown") | tostring | .[0:20]), (.crashes // 0)]) | .[:1]'
+  - name: apps
+    type: action
+    action: newrelic.nerdgraph.execute
+    version: '1'
+    inputs:
+      graphql: 'query($q: String!) { actor { entitySearch(query: $q) { types { domain count } } } }'
+      variables:
+        q: '${{ "domain IN (''BROWSER'', ''MOBILE'') AND type = ''APPLICATION'' AND accountId = " + (.workflowConstants.accountId | tostring) }}'
   - name: sa
     type: action
     action: script.run
@@ -289,12 +389,151 @@ steps:
             "areas": areas, "gaps": gaps,
             "ctx": ["Hosts: " + (" | ".join(hl) or "no data"), "Synthetics: " + (" | ".join(sl) or "no data")],
             "m": {"hostsOverAmber": ho, "synthFailPct": now[0], "sloMinBudget": L["low"][0]["b"] if L["low"] else -1}}))
+  - name: sd
+    type: action
+    action: script.run
+    version: '1'
+    inputs:
+      runtime: PYTHON_3_13
+      script: |
+        import json
+        I = json.loads(${{ {cfg: {lcpAmberSec: .workflowInputs.lcpAmberSec, lcpRedSec: .workflowInputs.lcpRedSec, inpAmberMs: .workflowInputs.inpAmberMs, inpRedMs: .workflowInputs.inpRedMs, clsAmber: .workflowInputs.clsAmber, clsRed: .workflowInputs.clsRed, jsErrAmberPct: .workflowInputs.jsErrAmberPct, jsErrRedPct: .workflowInputs.jsErrRedPct, minBrowserSamples: .workflowInputs.minBrowserSamples, crashAmberPct: .workflowInputs.crashAmberPct, crashRedPct: .workflowInputs.crashRedPct, mobileHttpAmberPct: .workflowInputs.mobileHttpAmberPct, mobileHttpRedPct: .workflowInputs.mobileHttpRedPct, minMobileSessions: .workflowInputs.minMobileSessions}, ent: (.steps.apps.outputs.data.actor.entitySearch.types // null), br: .steps.q_br.outputs.d, js: .steps.q_js.outputs.d, mob: .steps.q_mob.outputs.d, mv: .steps.q_mob_ver.outputs.d} | tojson | tojson }})
+        C = I["cfg"]
+
+
+        def f(k):
+            return float(C[k])
+
+
+        def apps(domain):
+            # None when the app inventory lookup failed: then the area is shown, never hidden.
+            if I["ent"] is None:
+                return None
+            return sum(int(t.get("count") or 0) for t in I["ent"] if t.get("domain") == domain)
+
+
+        def level(v, amber, red):
+            return 2 if v > f(red) else 1 if v > f(amber) else 0
+
+
+        ST = ["GREEN", "AMBER", "RED"]
+        areas, gaps, ctx, m = [], [], [], {}
+        if I["ent"] is None:
+            gaps.append("Browser and mobile: the app inventory lookup failed, so both areas are shown even if the account has none.")
+        # Browser. Rows: [app, previous?, p75 LCP s, LCP samples, p75 INP ms, INP samples, p75 CLS, CLS samples]
+        B, J, ms = I["br"], I["js"], f("minBrowserSamples")
+        js = {}
+        for a, prev, pv, er in J["r"]:
+            js[(a, prev)] = (pv, er)
+        cur, was = {}, {}
+        for a, prev, l, nl, i, ni, s, ns in B["r"]:
+            pv, er = js.get((a, prev), (0, 0))
+            d = {"a": a, "l": l if nl >= ms else None, "i": i if ni >= ms else None, "s": s if ns >= ms else None,
+                 "j": round(100.0 * er / pv, 2) if pv >= ms else None}
+            (was if prev else cur)[a] = d
+        for (a, prev), (pv, er) in js.items():
+            if a not in (was if prev else cur) and pv >= ms:
+                (was if prev else cur)[a] = {"a": a, "l": None, "i": None, "s": None, "j": round(100.0 * er / pv, 2)}
+
+
+        TH = {"l": ("lcpAmberSec", "lcpRedSec"), "i": ("inpAmberMs", "inpRedMs"), "s": ("clsAmber", "clsRed"),
+              "j": ("jsErrAmberPct", "jsErrRedPct")}
+
+
+        def blevel(d):
+            # -1 when no metric of the app had enough samples to judge
+            return max([level(d[k], *TH[k]) for k in TH if d[k] is not None] or [-1])
+
+
+        n_b = apps("BROWSER")
+        if n_b != 0 or B["n"] or J["n"]:
+            judged = sorted([d for d in cur.values() if blevel(d) >= 0], key=lambda d: (-blevel(d), -(d["l"] or 0)))
+            if not (B["n"] or J["n"]):
+                st = "NODATA"
+                gaps.append("Browser: %sno PageViewTiming or PageView events in the Report Window."
+                            % ("" if n_b is None else "%d browser app(s) exist but sent " % n_b))
+            elif not judged:
+                st = "NODATA"
+                gaps.append("Browser: no app had %d or more samples of LCP, INP, CLS or page views, so no thresholds were applied."
+                            % ms)
+            else:
+                st = ST[blevel(judged[0])]
+
+            def line(d):
+                p = []
+                if d["l"] is not None:
+                    p.append("LCP %.2f s" % d["l"])
+                if d["i"] is not None:
+                    p.append("INP %d ms" % d["i"])
+                if d["s"] is not None:
+                    p.append("CLS %.3f" % d["s"])
+                if d["j"] is not None:
+                    p.append("JS errors %.2f%% of page views" % d["j"])
+                return "%s: %s" % (d["a"], ", ".join(p))
+
+            over = len([d for d in judged if blevel(d) >= 1])
+            prev_over = len([d for d in was.values() if blevel(d) >= 1])
+            bl = [line(d) for d in judged[:5]]
+            nd = st == "NODATA"
+            areas.append({"key": "browser", "name": "Browser", "status": st,
+                          "headline": gaps[-1].split(": ", 1)[1] if nd else "%d of %d apps above an amber threshold (p75)" % (over, len(judged)),
+                          "delta": "no data" if nd else "apps above amber: %d (prev %d)" % (over, prev_over), "rows": bl[:3],
+                          "refs": ["br", "js", "apps"]})
+            ctx.append("Browser (p75): " + (" | ".join(bl) or "no data"))
+            # No metrics without data, so the history never records a gap as zero
+            if not nd:
+                m.update({"browserAppsOverAmber": over, "browserWorstLcpSec": max([d["l"] or 0 for d in judged]),
+                          "jsErrWorstPct": max([d["j"] or 0 for d in judged])})
+        else:
+            ctx.append("Browser: the account has no browser apps.")
+        # Mobile. Rows: [app, previous?, sessions, crashes, requests, request errors]
+        M, mm = I["mob"], f("minMobileSessions")
+        cur, was = [], []
+        for a, prev, se, cr, rq, re in M["r"]:
+            if se >= mm:
+                d = {"a": a, "c": round(100.0 * cr / se, 2), "n": cr,
+                     "h": round(100.0 * re / (rq + re), 2) if rq else None, "e": re}
+                (was if prev else cur).append(d)
+
+
+        def mlevel(d):
+            return max(level(d["c"], "crashAmberPct", "crashRedPct"),
+                       level(d["h"], "mobileHttpAmberPct", "mobileHttpRedPct") if d["h"] is not None else 0)
+
+
+        n_m = apps("MOBILE")
+        if n_m != 0 or M["n"]:
+            cur.sort(key=lambda d: (-mlevel(d), -d["c"]))
+            if not M["n"]:
+                st = "NODATA"
+                gaps.append("Mobile: %sno MobileSession events in the Report Window."
+                            % ("" if n_m is None else "%d mobile app(s) exist but sent " % n_m))
+            elif not cur:
+                st = "NODATA"
+                gaps.append("Mobile: no app had %d or more sessions, so no thresholds were applied." % mm)
+            else:
+                st = ST[mlevel(cur[0])]
+            ml = ["%s: crash rate %.2f%% (%d crashes), HTTP errors %s" % (
+                d["a"], d["c"], d["n"], ("%.2f%%" % d["h"]) if d["h"] is not None else "%d (no MobileRequest events)" % d["e"])
+                for d in cur[:5]]
+            ml += ["Top crashing version: %s %s (%d crashes)" % tuple(v) for v in I["mv"][:1]]
+            nd, worst, over = st == "NODATA", max([d["c"] for d in cur] or [0]), len([d for d in cur if mlevel(d) >= 1])
+            areas.append({"key": "mobile", "name": "Mobile", "status": st,
+                          "headline": gaps[-1].split(": ", 1)[1] if nd else "%d of %d apps above an amber threshold" % (over, len(cur)),
+                          "delta": "no data" if nd else "worst crash rate %.2f%% (prev %.2f%%)" % (worst, max([d["c"] for d in was] or [0])),
+                          "rows": ml[:3], "refs": ["mob", "mob_ver", "apps"]})
+            ctx.append("Mobile: " + (" | ".join(ml) or "no data"))
+            if not nd:
+                m.update({"mobileWorstCrashPct": worst, "mobileAppsOverAmber": over})
+        else:
+            ctx.append("Mobile: the account has no mobile apps.")
+        print(json.dumps({"areas": areas, "gaps": gaps, "ctx": ctx, "m": m}))
   - name: ask
     type: action
     action: newrelic.autopilot.run
     version: '1'
     inputs:
-      prompt: '${{ "Write the Probable Causes and Recommended Actions for the weekly observability report on New Relic account " + (.workflowConstants.accountId | tostring) + ". The report''s facts are listed below under FACTS. Cover only the critical alert events alert_event_1 to alert_event_3, and call them alert events, not incidents. Use exactly two plain-text headings: PROBABLE CAUSES and RECOMMENDED ACTIONS. Give each alert event one line per heading. Use only the FACTS and your own NRQL on account " + (.workflowConstants.accountId | tostring) + ", and cite the NRQL behind every number. State the evidence, or write unknown. Never guess. No data is never healthy. If a number in FACTS disagrees with what you find, add a line starting DISAGREEMENT: after the headings. Do not ask questions. If you cannot do the analysis, reply with one line only: NO ANALYSIS: followed by the reason, worded to complete the sentence ''Autopilot gave no analysis because ...''.\n\nFACTS\n" + (["report_window: " + (("7 days ending " + (.steps.sa.outputs.payload | fromjson).gen + ", compared with the 7 days before. Account " + (.workflowConstants.accountId | tostring) + ".") // "none" | tostring | .[0:1000]), "health_summary: " + (("Health summary: " + (([(.steps.sa.outputs.payload | fromjson).area, (.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; "))) // "none" | tostring | .[0:1000]), "alert_event_1: " + (((.steps.sa.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "alert_event_2: " + (((.steps.sa.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "alert_event_3: " + (((.steps.sa.outputs.payload | fromjson).ctx[2]) // "none" | tostring | .[0:1000]), "apm: " + (((.steps.sb.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "hosts: " + (((.steps.sc.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "synthetics: " + (((.steps.sc.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "data_gaps: " + (("Data gaps: " + (((.steps.sa.outputs.payload | fromjson).gaps + (.steps.sb.outputs.payload | fromjson).gaps + (.steps.sc.outputs.payload | fromjson).gaps) | if length == 0 then "none" else join(" ") end)) // "none" | tostring | .[0:1000])] | join("\n")) }}'
+      prompt: '${{ "Write the Probable Causes and Recommended Actions for the weekly observability report on New Relic account " + (.workflowConstants.accountId | tostring) + ". The report''s facts are listed below under FACTS. Cover only the critical alert events alert_event_1 to alert_event_3, and call them alert events, not incidents. Use exactly two plain-text headings: PROBABLE CAUSES and RECOMMENDED ACTIONS. Give each alert event one line per heading. Use only the FACTS and your own NRQL on account " + (.workflowConstants.accountId | tostring) + ", and cite the NRQL behind every number. State the evidence, or write unknown. Never guess. No data is never healthy. If a number in FACTS disagrees with what you find, add a line starting DISAGREEMENT: after the headings. Do not ask questions. If you cannot do the analysis, reply with one line only: NO ANALYSIS: followed by the reason, worded to complete the sentence ''Autopilot gave no analysis because ...''.\n\nFACTS\n" + (["report_window: " + (("7 days ending " + (.steps.sa.outputs.payload | fromjson).gen + ", compared with the 7 days before. Account " + (.workflowConstants.accountId | tostring) + ".") // "none" | tostring | .[0:1000]), "health_summary: " + (("Health summary: " + (([(.steps.sa.outputs.payload | fromjson).area] + (.steps.sd.outputs.payload | fromjson).areas + [(.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; "))) // "none" | tostring | .[0:1000]), "alert_event_1: " + (((.steps.sa.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "alert_event_2: " + (((.steps.sa.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "alert_event_3: " + (((.steps.sa.outputs.payload | fromjson).ctx[2]) // "none" | tostring | .[0:1000]), "apm: " + (((.steps.sb.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "hosts: " + (((.steps.sc.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "synthetics: " + (((.steps.sc.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "browser: " + (((.steps.sd.outputs.payload | fromjson).ctx[0]) // "none" | tostring | .[0:1000]), "mobile: " + (((.steps.sd.outputs.payload | fromjson).ctx[1]) // "none" | tostring | .[0:1000]), "data_gaps: " + (("Data gaps: " + (((.steps.sa.outputs.payload | fromjson).gaps + (.steps.sb.outputs.payload | fromjson).gaps + (.steps.sc.outputs.payload | fromjson).gaps + (.steps.sd.outputs.payload | fromjson).gaps) | if length == 0 then "none" else join(" ") end)) // "none" | tostring | .[0:1000])] | join("\n")) }}'
       context:
         - description: accountId
           value: '${{ .workflowConstants.accountId | tostring }}'
@@ -309,11 +548,11 @@ steps:
       runtime: PYTHON_3_13
       script: |
         import json
-        I = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | (.steps.sa.outputs.payload | fromjson) as $a | (.steps.sb.outputs.payload | fromjson) as $b | (.steps.sc.outputs.payload | fromjson) as $c | {a: ([$a.area, $b.area] + $c.areas), g: ($a.gaps + $b.gaps + $c.gaps), t: $a.top, n: $a.n, m: ($a.m + $b.m + $c.m), gen: $a.gen, ok: $ap.ok} | tojson | tojson }})
+        I = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | (.steps.sa.outputs.payload | fromjson) as $a | (.steps.sb.outputs.payload | fromjson) as $b | (.steps.sc.outputs.payload | fromjson) as $c | (.steps.sd.outputs.payload | fromjson) as $d | {a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok} | tojson | tojson }})
         COL = {"RED": "#c62828", "AMBER": "#ef6c00", "GREEN": "#2e7d32", "NODATA": "#757575"}
         LAB = {"RED": "RED", "AMBER": "AMBER", "GREEN": "GREEN", "NODATA": "NO DATA"}
         RANK = {"RED": 3, "AMBER": 2, "NODATA": 1, "GREEN": 0}
-        REF = json.loads("{\"inc_crit\": 1, \"inc_warn\": 2, \"inc_opened\": 3, \"inc_open_rows\": 4, \"counts\": 5, \"apm\": 6, \"hosts\": 7, \"synth_overall\": 8, \"synth_monitors\": 9, \"sls\": 10}")
+        REF = json.loads("{\"inc_crit\": 1, \"inc_warn\": 2, \"inc_opened\": 3, \"inc_open_rows\": 4, \"counts\": 5, \"apm\": 6, \"hosts\": 7, \"synth_overall\": 8, \"synth_monitors\": 9, \"sls\": 10, \"br\": 11, \"js\": 12, \"mob\": 13, \"mob_ver\": 14, \"apps\": 15}")
         A, M = I["a"], I["m"]
         overall = max([a["status"] for a in A], key=lambda s: RANK[s])
         TD = "<td style='padding:6px;border-bottom:1px solid #eee;vertical-align:top'>"
@@ -342,7 +581,7 @@ steps:
 
         rows = ""
         for a in A:
-            sub = "".join("<div style='color:#555;font-size:12px'>%s</div>" % esc(r) for r in a["rows"][:3])
+            sub = "".join("<div style='color:#555;font-size:12px'>%s</div>" % esc(r) for r in a["rows"][:2])
             rows += "<tr>%s<b>%s</b></td>%s%s</td>%s%s%s</td>%s%s</td>%s%s</td></tr>" % (
                 TD, esc(a["name"]), TD, badge(a["status"]), TD, esc(a["headline"]), sub, TD, esc(a["delta"]), TD,
                 esc(refs(a["refs"])))
@@ -452,7 +691,7 @@ steps:
     inputs:
       destinationId: '${{ .workflowInputs.destinationId }}'
       subject: '${{ (.steps.r1.outputs.payload | fromjson).subject }}'
-      message: '${{ (.steps.r1.outputs.payload | fromjson) as $r | $r.head + "<h2 style=''font-size:16px;margin:22px 0 6px;border-bottom:1px solid #ddd''>3. Probable causes and recommended actions (Autopilot)</h2><div style=''font-size:13px;line-height:1.45''>" + .steps.md.outputs.payload + "</div>" + $r.tail + "<h2 style=''font-size:14px;margin:22px 0 4px''>Sources (NRQL behind every number)</h2><div style=''font-size:11px;color:#555;margin:2px 0''>[1] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[2] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;warning&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[3] FROM NrAiIncident SELECT filter(count(*), WHERE event = &#x27;open&#x27;) AS opened FACET priority SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[4] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent, min(openTime) AS openedAt, latest(title) AS title, latest(entity.name) AS entityName WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT latest(title) AS title, latest(entityName) AS entityName, min(openedAt) AS openedAt WHERE lastEvent = &#x27;open&#x27; FACET incidentId LIMIT 1000 SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[5] SELECT count(*) FROM NrAiIncident, Transaction, SystemSample, SyntheticCheck, ServiceLevelSnapshot FACET eventType() SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[6] FROM Transaction SELECT count(*) AS reqs, percentage(count(*), WHERE error IS true) AS errPct, percentile(duration, 95) AS p95 FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[7] FROM SystemSample SELECT max(cpuPercent), max(memoryUsedPercent), max(diskUsedPercent) FACET hostname SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[8] FROM SyntheticCheck SELECT count(*) AS checks, percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[9] FROM SyntheticCheck SELECT percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct, count(*) AS checks FACET monitorName SINCE 7 days ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[10] FROM ServiceLevelSnapshot SELECT latest(remainingErrorBudget) AS budget, latest(entity.name) AS name FACET entity.guid SINCE 1 day ago LIMIT 100</div></div>" }}'
+      message: '${{ (.steps.r1.outputs.payload | fromjson) as $r | $r.head + "<h2 style=''font-size:16px;margin:22px 0 6px;border-bottom:1px solid #ddd''>3. Probable causes and recommended actions (Autopilot)</h2><div style=''font-size:13px;line-height:1.45''>" + .steps.md.outputs.payload + "</div>" + $r.tail + "<h2 style=''font-size:14px;margin:22px 0 4px''>Sources (NRQL behind every number)</h2><div style=''font-size:11px;color:#555;margin:2px 0''>[1] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[2] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent WHERE priority = &#x27;warning&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT count(*) AS total, filter(count(*), WHERE lastEvent = &#x27;open&#x27;) AS openNow SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[3] FROM NrAiIncident SELECT filter(count(*), WHERE event = &#x27;open&#x27;) AS opened FACET priority SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[4] FROM (FROM NrAiIncident SELECT latest(event) AS lastEvent, min(openTime) AS openedAt, latest(title) AS title, latest(entity.name) AS entityName WHERE priority = &#x27;critical&#x27; AND event IN (&#x27;open&#x27;,&#x27;close&#x27;) FACET incidentId LIMIT MAX) SELECT latest(title) AS title, latest(entityName) AS entityName, min(openedAt) AS openedAt WHERE lastEvent = &#x27;open&#x27; FACET incidentId LIMIT 1000 SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[5] SELECT count(*) FROM NrAiIncident, Transaction, SystemSample, SyntheticCheck, ServiceLevelSnapshot FACET eventType() SINCE 7 days ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[6] FROM Transaction SELECT count(*) AS reqs, percentage(count(*), WHERE error IS true) AS errPct, percentile(duration, 95) AS p95 FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[7] FROM SystemSample SELECT max(cpuPercent), max(memoryUsedPercent), max(diskUsedPercent) FACET hostname SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[8] FROM SyntheticCheck SELECT count(*) AS checks, percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct SINCE 7 days ago COMPARE WITH 1 week ago</div><div style=''font-size:11px;color:#555;margin:2px 0''>[9] FROM SyntheticCheck SELECT percentage(count(*), WHERE result = &#x27;FAILED&#x27;) AS failPct, count(*) AS checks FACET monitorName SINCE 7 days ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[10] FROM ServiceLevelSnapshot SELECT latest(remainingErrorBudget) AS budget, latest(entity.name) AS name FACET entity.guid SINCE 1 day ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[11] FROM PageViewTiming SELECT percentile(largestContentfulPaint, 75) AS lcp, count(largestContentfulPaint) AS nl, percentile(interactionToNextPaint, 75) AS inp, count(interactionToNextPaint) AS ni, percentile(cumulativeLayoutShift, 75) AS cls, count(cumulativeLayoutShift) AS nc FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[12] FROM PageView, JavaScriptError SELECT filter(count(*), WHERE eventType() = &#x27;PageView&#x27;) AS pv, filter(count(*), WHERE eventType() = &#x27;JavaScriptError&#x27;) AS jse FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[13] FROM MobileSession, MobileCrash, MobileRequest, MobileRequestError SELECT filter(count(*), WHERE eventType() = &#x27;MobileSession&#x27;) AS sessions, filter(count(*), WHERE eventType() = &#x27;MobileCrash&#x27;) AS crashes, filter(count(*), WHERE eventType() = &#x27;MobileRequest&#x27;) AS reqs, filter(count(*), WHERE eventType() = &#x27;MobileRequestError&#x27;) AS reqErrs FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100</div><div style=''font-size:11px;color:#555;margin:2px 0''>[14] FROM MobileCrash SELECT count(*) AS crashes FACET appName, appVersion SINCE 7 days ago LIMIT 3</div><div style=''font-size:11px;color:#555;margin:2px 0''>[15] NerdGraph entitySearch: domain IN (&#x27;BROWSER&#x27;, &#x27;MOBILE&#x27;) AND type = &#x27;APPLICATION&#x27; AND accountId = &lt;this account&gt;</div></div>" }}'
   - name: record
     type: action
     action: newrelic.ingest.sendEvents
@@ -469,4 +708,4 @@ steps:
       email_error: '${{ (.steps.email.outputs.errorMessage // "") | tostring | .[0:1000] }}'
       record_success: '${{ .steps.record.outputs.success }}'
       record_error: '${{ (.steps.record.outputs.errorMessage // "") | tostring | .[0:1000] }}'
-      summary: '${{ ([(.steps.sa.outputs.payload | fromjson).area, (.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; ") }}'
+      summary: '${{ ([(.steps.sa.outputs.payload | fromjson).area] + (.steps.sd.outputs.payload | fromjson).areas + [(.steps.sb.outputs.payload | fromjson).area] + (.steps.sc.outputs.payload | fromjson).areas) | map(.name + " " + .status) | join("; ") }}'

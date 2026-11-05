@@ -90,7 +90,7 @@ DESTINATION_ID = os.getenv("DESTINATION_ID", "")
 DEST_PLACEHOLDER = "REPLACE_WITH_EMAIL_DESTINATION_ID"
 # The rc_*.py sources are needed only to rebuild the YAML (--build, --preview, --stage compute). Without them,
 # --check and --deploy use the shipped weekly-report.yaml.
-HAVE_SOURCES = all((HERE / f).is_file() for f in ("rc_incidents.py", "rc_apm.py", "rc_infra.py", "rc_render.py", "rc_markdown.py"))
+HAVE_SOURCES = all((HERE / f).is_file() for f in ("rc_incidents.py", "rc_apm.py", "rc_infra.py", "rc_dem.py", "rc_render.py", "rc_markdown.py"))
 NAMES = {"full": "weekly-observability-report", "compute": "weekly-observability-report-compute-test"}
 YAML_FILE = HERE / "weekly-report.yaml"
 PREVIEW_FILE = HERE / "weekly_report_preview.html"
@@ -126,7 +126,23 @@ QUERIES = {
                       "FACET monitorName SINCE 7 days ago LIMIT 100",
     "sls": "FROM ServiceLevelSnapshot SELECT latest(remainingErrorBudget) AS budget, latest(entity.name) AS name "
            "FACET entity.guid SINCE 1 day ago LIMIT 100",
+    "br": "FROM PageViewTiming SELECT percentile(largestContentfulPaint, 75) AS lcp, count(largestContentfulPaint) AS nl, "
+          "percentile(interactionToNextPaint, 75) AS inp, count(interactionToNextPaint) AS ni, "
+          "percentile(cumulativeLayoutShift, 75) AS cls, count(cumulativeLayoutShift) AS nc "
+          "FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100",
+    "js": "FROM PageView, JavaScriptError SELECT filter(count(*), WHERE eventType() = 'PageView') AS pv, "
+          "filter(count(*), WHERE eventType() = 'JavaScriptError') AS jse FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100",
+    "mob": "FROM MobileSession, MobileCrash, MobileRequest, MobileRequestError SELECT "
+           "filter(count(*), WHERE eventType() = 'MobileSession') AS sessions, filter(count(*), WHERE eventType() = 'MobileCrash') AS crashes, "
+           "filter(count(*), WHERE eventType() = 'MobileRequest') AS reqs, filter(count(*), WHERE eventType() = 'MobileRequestError') AS reqErrs "
+           "FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100",
+    "mob_ver": "FROM MobileCrash SELECT count(*) AS crashes FACET appName, appVersion SINCE 7 days ago LIMIT 3",
 }
+# Browser and mobile apps in the account (NerdGraph, not NRQL): an area with no apps is left out, not reported as a gap.
+ENTITY_GQL = "query($q: String!) { actor { entitySearch(query: $q) { types { domain count } } } }"
+ENTITY_SEARCH = "domain IN ('BROWSER', 'MOBILE') AND type = 'APPLICATION' AND accountId = "
+# Source numbering in the email: the NRQL queries, then the app lookup.
+SOURCES = dict(QUERIES, apps="NerdGraph entitySearch: " + ENTITY_SEARCH + "<this account>")
 
 # jq selectors, applied to {results: [...]}; each query step exposes the trimmed value as outputs.d
 R2 = "((%s * 100 | round) / 100)"
@@ -160,11 +176,36 @@ SELECTORS = {
     "sls": '.results | map(select(.budget != null)) | {n: length, low: (sort_by(.budget) | .[:8] | '
            'map({n: ((.name // "unnamed") | .[0:50]), b: (.budget | round)}))}',
 }
+# Browser and mobile rows are compact arrays [app, previous (1) or current (0), values...]: this week's top apps by sample
+# count, each with its previous-week row. n counts all of this week's apps.
+APP_PREV = '((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end)'
+
+
+def top_apps(count_attr, limit):
+    return ('.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(%s // 0)) | .[:%d]'
+            ' | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm'
+            ' | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([' % (count_attr, limit))
+
+
+SELECTORS.update({
+    "br": top_apps(".nl", 6) + APP_PREV + ', ' + R2 % '(.lcp["75"] // 0)' + ', (.nl // 0), '
+          '(((.inp["75"] // 0) * 1000) | round), (.ni // 0), ((((.cls["75"] // 0) * 1000) | round) / 1000), (.nc // 0)]))}',
+    "js": top_apps(".pv", 6) + APP_PREV + ', (.pv // 0), (.jse // 0)]))}',
+    "mob": top_apps(".sessions", 6) + APP_PREV + ', (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}',
+    # A two-attribute FACET returns facet: [appName, appVersion]
+    "mob_ver": '.results | map([((.facet[0] // "unnamed") | tostring | .[0:30]), ((.facet[1] // "unknown") | tostring | .[0:20]), '
+               '(.crashes // 0)]) | .[:1]',
+})
 
 # Workflow inputs (strings in WA) that the scoring scripts convert.
 INPUT_DEFAULTS = {
     "errRedPct": "5", "errAmberPct": "1", "p95IncreasePct": "20", "minRequests": "100",
     "hostAmberPct": "85", "hostRedPct": "95", "synthAmberPct": "5", "synthRedPct": "50", "sloAmberBudgetPct": "25",
+    # Browser: Google's Core Web Vitals cut-offs at p75 (good up to amber, poor above red); JS errors per 100 page views.
+    "lcpAmberSec": "2.5", "lcpRedSec": "4", "inpAmberMs": "200", "inpRedMs": "500", "clsAmber": "0.1", "clsRed": "0.25",
+    "jsErrAmberPct": "5", "jsErrRedPct": "25", "minBrowserSamples": "20",
+    # Mobile: crashes per 100 sessions; HTTP errors per 100 requests.
+    "crashAmberPct": "1", "crashRedPct": "3", "mobileHttpAmberPct": "5", "mobileHttpRedPct": "20", "minMobileSessions": "50",
 }
 
 # What the WA script sandbox rejected in probes (2026-11-04); the real scan may reject more.
@@ -192,21 +233,30 @@ SCRIPTS = [
     ("sc", "rc_infra.py", "{cfg: %s, ec: %s, h: %s, so: %s, sm: %s, sl: %s}" % (
         cfg_expr(["hostAmberPct", "hostRedPct", "synthAmberPct", "synthRedPct", "sloAmberBudgetPct"]), D("counts"), D("hosts"),
         D("synth_overall"), D("synth_monitors"), D("sls"))),
+    ("sd", "rc_dem.py", "{cfg: %s, ent: (.steps.apps.outputs.data.actor.entitySearch.types // null), br: %s, js: %s, mob: %s, mv: %s}" % (
+        cfg_expr(["lcpAmberSec", "lcpRedSec", "inpAmberMs", "inpRedMs", "clsAmber", "clsRed", "jsErrAmberPct", "jsErrRedPct",
+                  "minBrowserSamples", "crashAmberPct", "crashRedPct", "mobileHttpAmberPct", "mobileHttpRedPct", "minMobileSessions"]),
+        D("br"), D("js"), D("mob"), D("mob_ver"))),
 ]
-AREAS_EXPR = f"([{P('sa')}.area, {P('sb')}.area] + {P('sc')}.areas)"
-GAPS_EXPR = f"({P('sa')}.gaps + {P('sb')}.gaps + {P('sc')}.gaps)"
+# Area order in the health summary: Alert events, Browser, Mobile, APM services, Hosts, Synthetics, Service levels.
+AREAS_EXPR = f"([{P('sa')}.area] + {P('sd')}.areas + [{P('sb')}.area] + {P('sc')}.areas)"
+GAPS_EXPR = f"({P('sa')}.gaps + {P('sb')}.gaps + {P('sc')}.gaps + {P('sd')}.gaps)"
 # Object values must be simple terms in the WA jq dialect (`{t: (expr).top}` fails), so bind the payloads first.
-RENDER_INPUT = (f"{P('sa')} as $a | {P('sb')} as $b | {P('sc')} as $c | "
-                "{a: ([$a.area, $b.area] + $c.areas), g: ($a.gaps + $b.gaps + $c.gaps), t: $a.top, n: $a.n, "
-                "m: ($a.m + $b.m + $c.m), gen: $a.gen, ok: $ap.ok}")
+# Two sub-rows per area and 120-character titles keep rc_render under SCRIPT_LIMIT with all seven areas.
+RENDER_INPUT = (f"{P('sa')} as $a | {P('sb')} as $b | {P('sc')} as $c | {P('sd')} as $d | "
+                "{a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), "
+                "g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, "
+                "m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok}")
 # Tested 2026-11-04: Autopilot did not see `context` items by name and asked for the incidents, so the
 # facts go in the prompt text itself. Each fact is capped at 1,000 characters.
 ACCOUNT_EXPR = ".workflowConstants.accountId | tostring"
+ENTITY_Q_EXPR = f"{json.dumps(ENTITY_SEARCH)} + ({ACCOUNT_EXPR})"
 FACTS = [
     ("report_window", f'"7 days ending " + {P("sa")}.gen + ", compared with the 7 days before. Account " + ({ACCOUNT_EXPR}) + "."'),
     ("health_summary", f'"Health summary: " + ({AREAS_EXPR} | map(.name + " " + .status) | join("; "))'),
     ("alert_event_1", f'{P("sa")}.ctx[0]'), ("alert_event_2", f'{P("sa")}.ctx[1]'), ("alert_event_3", f'{P("sa")}.ctx[2]'),
     ("apm", f'{P("sb")}.ctx[0]'), ("hosts", f'{P("sc")}.ctx[0]'), ("synthetics", f'{P("sc")}.ctx[1]'),
+    ("browser", f'{P("sd")}.ctx[0]'), ("mobile", f'{P("sd")}.ctx[1]'),
     ("data_gaps", f'"Data gaps: " + ({GAPS_EXPR} | if length == 0 then "none" else join(" ") end)'),
 ]
 PROMPT_INTRO = (
@@ -247,7 +297,7 @@ MD_INPUT = (AP_EXPR + '$ap.text as $t | ([8000, 7000, 6000, 5000, 4000, 3000, 20
 
 def sources_html():
     items = "".join("<div style='font-size:11px;color:#555;margin:2px 0'>[%d] %s</div>" % (i + 1, html.escape(q))
-                    for i, q in enumerate(QUERIES.values()))
+                    for i, q in enumerate(SOURCES.values()))
     return "<h2 style='font-size:14px;margin:22px 0 4px'>Sources (NRQL behind every number)</h2>" + items + "</div>"
 
 
@@ -291,7 +341,7 @@ def sandbox_check(code, label):
 
 
 def ref_literal():
-    return json.dumps(json.dumps({k: i + 1 for i, k in enumerate(QUERIES)}))
+    return json.dumps(json.dumps({k: i + 1 for i, k in enumerate(SOURCES)}))
 
 
 def script_text(file_name, input_literal):
@@ -323,6 +373,8 @@ def build_yaml(stage):
     for k, q in QUERIES.items():
         out.append(f"  - name: q_{k}\n    type: action\n    action: newrelic.nrdb.query\n    version: '1'\n"
                    f"    inputs:\n      query: {yq(q)}\n      selectors:\n        - name: d\n          expression: {yq(SELECTORS[k])}")
+    out.append("  - name: apps\n    type: action\n    action: newrelic.nerdgraph.execute\n    version: '1'\n    inputs:\n"
+               f"      graphql: {yq(ENTITY_GQL)}\n      variables:\n        q: {yq(tpl(ENTITY_Q_EXPR))}")
     for name, file_name, expr in SCRIPTS:
         out.append(script_step(name, file_name, expr))
     summary = f'{AREAS_EXPR} | map(.name + " " + .status) | join("; ")'
@@ -550,6 +602,9 @@ def preview():
         rows = nrql(q)
         state["steps"][f"q_{k}"] = {"outputs": {"d": jq(SELECTORS[k], {"results": rows})}}
         print(f"  {k}: {len(rows)} row(s) -> {len(json.dumps(state['steps'][f'q_{k}']['outputs']['d']))} chars after trim")
+    q = jq(ENTITY_Q_EXPR, state, raw=True)
+    state["steps"]["apps"] = {"outputs": {"data": nerdgraph(ENTITY_GQL, {"q": q})}}
+    print("  apps:", json.dumps(state["steps"]["apps"]["outputs"]["data"]["actor"]["entitySearch"]["types"]))
     state["now"] = time.time()
     for name, file_name, expr in SCRIPTS:
         # jq `now` is the local clock here, as it is the WA clock in the workflow
