@@ -2,13 +2,20 @@
 
 A New Relic Workflow Automation workflow that emails a weekly health report for one account. It covers which areas are red, amber or green, the critical alert events that are still open, Autopilot's probable causes and recommended actions, and any data gaps. Setup takes about 15 minutes.
 
-You get three files:
+## Sneak peek
+
+![The weekly report email: header, overall status and the health summary table](docs/report-preview.png)
+
+This sample comes from a New Relic demo account. The whole email, including Autopilot's analysis and the NRQL sources, is in [docs/sample-report.pdf](docs/sample-report.pdf) (4 pages; the recipient and account ID are redacted).
+
+## Files
 
 | File | What it is |
 |---|---|
 | `README.md` | This guide |
 | `weekly-report.yaml` | The workflow definition, ready to deploy. It works in any account. |
 | `weekly_report.py` | A command-line helper to deploy, run, and schedule the workflow. It needs Python 3.10+ and nothing else (standard library only). |
+| `docs/` | The sample screenshot and PDF shown above |
 
 ## What the email contains
 

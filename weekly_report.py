@@ -406,6 +406,10 @@ def package(target):
                      (pathlib.Path(__file__).name, pathlib.Path(__file__).name)):
         (out / dst).write_bytes((HERE / src).read_bytes())
         print("Copied", out / dst)
+    for f in sorted((HERE / "docs").glob("*")) if (HERE / "docs").is_dir() else []:
+        (out / "docs").mkdir(exist_ok=True)
+        (out / "docs" / f.name).write_bytes(f.read_bytes())
+        print("Copied", out / "docs" / f.name)
     (out / ".gitignore").write_text("__pycache__/\n*.env\nweekly_report_preview.html\nweekly_report_prompt_preview.txt\n")
 
 
