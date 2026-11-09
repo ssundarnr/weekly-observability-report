@@ -17,7 +17,7 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 | `weekly_report.py` | A command-line helper to deploy, run, and schedule the workflow. It needs Python 3.10+ and nothing else (standard library only). |
 | `docs/` | The sample screenshot and PDF shown above |
 
-## What the email contains
+## What the weekly email report contains
 
 1. **Health summary.** One row per Health Area: Alert events, Browser, Mobile, APM services, Hosts, Synthetics, and Service levels. Each row shows its status, this week's numbers, and the change from last week. Browser and Mobile appear only if the account has browser or mobile apps.
 2. **Critical alert events.** How many are open now and how many opened this week, plus the longest-open ones.
@@ -76,10 +76,32 @@ The `apps` step (`newrelic.nerdgraph.execute`) counts the account's browser and 
 - `sc`: Hosts, Synthetics, and Service levels.
 - `sd`: Browser and Mobile.
 
+Scoring has three steps:
+
+1. **Score each item.** An item is one service, host, monitor, service level or app. Its numbers for the week are compared with the red and amber thresholds in the table above. Items with too little data are skipped (fewer than 100 requests for a service, 20 samples of a browser metric, or 50 sessions for a mobile app), so one slow request can't turn an area red.
+2. **The area takes its worst item's status.** One red host makes Hosts red, however healthy the other hosts are. An area whose source sent no data is NO DATA, never green.
+   Alert events is the exception: it is scored on counts (any critical alert event still open makes it red), and a week with no alert events is green.
+3. **The overall status is the worst area's status**, in the order RED, AMBER, NO DATA, GREEN. It goes in the subject line, for example `[RED] Weekly observability report`.
+
+For example, the Browser row of the sample report above:
+
+| App | This week (p75) | Compared with | Result |
+|---|---|---|---|
+| Perspective-Gold | CLS 0.434 | Red above 0.25 | RED |
+| Buying Program Simulator | LCP 2.06 s | Amber above 2.5 s | Under both thresholds |
+| Buying Program Simulator | 7.50 JavaScript errors per 100 page views | Amber above 5, red above 25 | AMBER |
+
+So Browser is RED, because its worst app is red. The thresholds are workflow inputs, so you can change them (see [Change things](#change-things)).
+
 **3. Ask Autopilot why (`ask`, `newrelic.autopilot.run`).**
 - The step sends one prompt containing the health summary and the 3 alert events.
 - It asks for probable causes and recommended actions. Autopilot can run its own NRQL for evidence and is told to write "unknown" rather than guess.
 - Autopilot never sets the numbers or the colours.
+
+**Why the numbers come first.** The workflow collects and scores the numbers before it calls Autopilot, and keeps the two jobs apart:
+- **The numbers are repeatable.** A query and a fixed rule give the same result every time, and every number in the email cites the NRQL behind it. Autopilot is an AI agent: its wording and conclusions vary from run to run, and it can be wrong. In an early test it accepted a wrong "0 critical alert events" premise instead of checking it.
+- **Autopilot gets a focused question.** It starts from the facts and the 3 alert events that matter most, so it spends its time on why they happened, not on counting them. If its own NRQL disagrees with a number, it is told to say so in a line starting `DISAGREEMENT:`.
+- **The report doesn't depend on Autopilot.** If Autopilot gives no usable answer, the health summary, alert events and data gaps are still correct, and section 3 says why there is no analysis.
 
 **4. Build the email (`r1`).**
 - This step builds the header, the coloured health summary table, the critical alert events list, the data gaps, the subject line (for example `[RED] Weekly observability report, 2026-11-04`), and the history event.
@@ -99,7 +121,7 @@ The `apps` step (`newrelic.nerdgraph.execute`) counts the account's browser and 
 - **A User API key** (`NRAK-…`) that can query data and create and run workflows. Create it under API keys in New Relic.
 - **An email destination** for the report, under Alerts > Destinations. If you don't have one, create it first.
 
-## Set up with the script (recommended)
+## Set up with the script (option 1)
 
 **1. Get the files,** by cloning this repository (or putting the three files in one folder). Then create `~/.nr-weekly.env`:
 
@@ -110,6 +132,11 @@ NR_REGION=us
 ```
 
 Set `NR_REGION=eu` if your account is in the EU region.
+
+**What `~/.nr-weekly.env` is for.** It holds your settings for `weekly_report.py`: which account to use, your API key, the region, and later the email destination and schedule time. The script reads it every time it runs, so you don't have to type them into each command.
+- It lives in your home folder, outside the repository, so your API key is never committed. The repository's `.gitignore` also ignores `*.env` files.
+- Only the script reads it. The workflow itself runs inside New Relic and never sees your API key.
+- An environment variable with the same name overrides the file. To use a different file, for example one per account, set `NR_ENV_FILE` to its path.
 
 **2. Find your email destination ID.**
 
@@ -169,7 +196,7 @@ python weekly_report.py --schedule --confirm-schedule
 
 The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails and uses Autopilot capacity every week until you run `python weekly_report.py --unschedule`.
 
-## Set up without Python
+## Set up without Python (option 2)
 
 1. Open `weekly-report.yaml`. Replace `REPLACE_WITH_EMAIL_DESTINATION_ID` with your email destination ID. You'll find it under Alerts > Destinations.
 2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
