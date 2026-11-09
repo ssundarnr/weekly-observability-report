@@ -196,12 +196,6 @@ python weekly_report.py --schedule --confirm-schedule
 
 The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails and uses Autopilot capacity every week until you run `python weekly_report.py --unschedule`.
 
-## Set up without Python (option 2)
-
-1. Open `weekly-report.yaml`. Replace `REPLACE_WITH_EMAIL_DESTINATION_ID` with your email destination ID. You'll find it under Alerts > Destinations.
-2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
-3. Run it from the UI. Each step's result appears in the run view.
-
 ## Change things
 
 | To change | Do this |
@@ -229,6 +223,21 @@ At the default `INFO` level the logs only show each step starting and finishing.
 | `Set DESTINATION_ID …` or `Set NR_API_KEY …` | Missing config. | Add it to `~/.nr-weekly.env`. |
 | The run fails before any step | The workflow isn't deployed, or the key can't use Workflow Automation. | Run `--check`, then `--deploy`. Check that the key is a User key for this account. |
 
+## Remove the weekly report Workflow Automation
+
+```
+python weekly_report.py --unschedule
+python weekly_report.py --delete
+```
+
+`WeeklyObservabilityReport` events already written stay in the account until their data retention ends.
+
+## Set up without Python script (option 2)
+
+1. Open `weekly-report.yaml`. Replace `REPLACE_WITH_EMAIL_DESTINATION_ID` with your email destination ID. You'll find it under Alerts > Destinations.
+2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
+3. Run it from the UI. Each step's result appears in the run view.
+
 ## Limits to know
 
 - **Old alert events are missed.** Critical alert events that opened more than 7 days ago and are still open are not counted, so "open now" can undercount.
@@ -237,12 +246,3 @@ At the default `INFO` level the logs only show each step starting and finishing.
 - **Autopilot's text varies.** It doesn't always follow the requested format, and it can be wrong. Treat its causes as leads to check, not conclusions.
 - **Charts are dropped.** Autopilot sometimes includes charts, which the email leaves out.
 - **Run cost.** Every run, scheduled or manual, sends an email and uses Autopilot capacity.
-
-## Remove it
-
-```
-python weekly_report.py --unschedule
-python weekly_report.py --delete
-```
-
-`WeeklyObservabilityReport` events already written stay in the account until their data retention ends.
