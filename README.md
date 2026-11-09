@@ -14,11 +14,11 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 - [What the weekly email report contains](#what-the-weekly-email-report-contains)
 - [How the workflow works](#how-the-workflow-works)
 - [Before you start](#before-you-start)
-- [Set up with the script (option 1)](#set-up-with-the-script-option-1)
+- [Set up in the Workflow Automation UI (option 1)](#set-up-in-the-workflow-automation-ui-option-1)
+- [Set up with the Python script (option 2)](#set-up-with-the-python-script-option-2)
   - [Change things](#change-things)
   - [Check a run and troubleshoot](#check-a-run-and-troubleshoot)
   - [Remove the weekly report Workflow Automation](#remove-the-weekly-report-workflow-automation)
-- [Set up without Python script (option 2)](#set-up-without-python-script-option-2)
 - [Limits to know](#limits-to-know)
 
 ## Files in this repo
@@ -26,8 +26,8 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 | File | What it is |
 |---|---|
 | `README.md` | This guide |
-| `weekly-report.yaml` | The workflow definition, ready to deploy. It works in any account. |
-| `weekly_report.py` | A command-line helper to deploy, run, and schedule the workflow. It needs Python 3.10+ and nothing else (standard library only). |
+| `weekly-report.yaml` | The workflow definition, ready to deploy. It works in any account. This is the file to keep and build on. |
+| `weekly_report.py` | An optional command-line helper to deploy, run, and schedule the workflow. It needs Python 3.10+ and nothing else (standard library only). |
 | `docs/` | The sample screenshot and PDF shown above |
 
 ## What the weekly email report contains
@@ -131,10 +131,20 @@ So the app is AMBER, its worst result, and Browser is AMBER because its worst ap
 
 - **Workflow Automation** in your account. This needs the Advanced Compute plan.
 - **Autopilot** in your account, for section 3. Each run uses Autopilot capacity (aCCU) and takes about 1 to 3 minutes.
-- **A User API key** (`NRAK-…`) that can query data and create and run workflows. Create it under API keys in New Relic.
+- **A User API key** (`NRAK-…`), for the Python script (option 2) only. It must be able to query data and create and run workflows. Create it under API keys in New Relic.
 - **An email destination** for the report, under Alerts > Destinations. If you don't have one, create it first.
 
-## Set up with the script (option 1)
+## Set up in the Workflow Automation UI (option 1)
+
+`weekly-report.yaml` is the reusable asset. It's an example of what's possible, not a workflow New Relic maintains, so keep a copy in your own repository and change it as your needs grow.
+
+1. Open `weekly-report.yaml`. Replace `REPLACE_WITH_EMAIL_DESTINATION_ID` with your email destination ID. You'll find it under Alerts > Destinations.
+2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
+3. Run it from the UI. Each step's result appears in the run view.
+
+To change the thresholds, edit the `defaultValue` of the inputs at the top of the YAML (see the list in [Change things](#change-things)), then update the workflow with the new YAML.
+
+## Set up with the Python script (option 2)
 
 **1. Get the files,** by cloning this repository (or putting the three files in one folder). Then create `~/.nr-weekly.env`:
 
@@ -244,12 +254,6 @@ python weekly_report.py --delete
 ```
 
 `WeeklyObservabilityReport` events already written stay in the account until their data retention ends.
-
-## Set up without Python script (option 2)
-
-1. Open `weekly-report.yaml`. Replace `REPLACE_WITH_EMAIL_DESTINATION_ID` with your email destination ID. You'll find it under Alerts > Destinations.
-2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
-3. Run it from the UI. Each step's result appears in the run view.
 
 ## Limits to know
 
