@@ -8,7 +8,20 @@ A New Relic Workflow Automation workflow that emails a weekly health report for 
 
 This sample comes from a New Relic demo account. The whole email, including Autopilot's analysis and the NRQL sources, is in [docs/sample-report.pdf](docs/sample-report.pdf) (4 pages; the recipient and account ID are redacted).
 
-## Files
+## Contents
+
+- [Files in this repo](#files-in-this-repo)
+- [What the weekly email report contains](#what-the-weekly-email-report-contains)
+- [How the workflow works](#how-the-workflow-works)
+- [Before you start](#before-you-start)
+- [Set up with the script (option 1)](#set-up-with-the-script-option-1)
+  - [Change things](#change-things)
+  - [Check a run and troubleshoot](#check-a-run-and-troubleshoot)
+  - [Remove the weekly report Workflow Automation](#remove-the-weekly-report-workflow-automation)
+- [Set up without Python script (option 2)](#set-up-without-python-script-option-2)
+- [Limits to know](#limits-to-know)
+
+## Files in this repo
 
 | File | What it is |
 |---|---|
@@ -196,7 +209,7 @@ python weekly_report.py --schedule --confirm-schedule
 
 The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails and uses Autopilot capacity every week until you run `python weekly_report.py --unschedule`.
 
-## Change things
+### Change things
 
 | To change | Do this |
 |---|---|
@@ -205,7 +218,7 @@ The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails an
 | **Who gets the email** | Use a different `DESTINATION_ID` (a team mailbox works well), then run `--deploy` again. |
 | **After any redeploy** | If a schedule exists, run `--schedule --confirm-schedule` again. A schedule is pinned to one workflow version, so it keeps running the old version until you do. |
 
-## Check a run and troubleshoot
+### Check a run and troubleshoot
 
 To see what every step received and returned, run with `--log-level TRACE`, then query the logs. The run ID is printed by `--run`:
 
@@ -223,7 +236,7 @@ At the default `INFO` level the logs only show each step starting and finishing.
 | `Set DESTINATION_ID …` or `Set NR_API_KEY …` | Missing config. | Add it to `~/.nr-weekly.env`. |
 | The run fails before any step | The workflow isn't deployed, or the key can't use Workflow Automation. | Run `--check`, then `--deploy`. Check that the key is a User key for this account. |
 
-## Remove the weekly report Workflow Automation
+### Remove the weekly report Workflow Automation
 
 ```
 python weekly_report.py --unschedule
