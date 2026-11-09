@@ -6,7 +6,7 @@ A New Relic Workflow Automation workflow that emails a weekly health report for 
 
 ![The weekly report email: header, overall status and the health summary table](docs/report-preview.png)
 
-This sample comes from a New Relic demo account. The whole email, including Autopilot's analysis and the NRQL sources, is in [docs/sample-report.pdf](docs/sample-report.pdf) (4 pages; the recipient and account ID are redacted).
+This sample comes from a New Relic demo account. The whole email, including Autopilot's analysis and the NRQL sources, is in [docs/sample-report.pdf](docs/sample-report.pdf) (4 pages; the recipient, account name and account ID are redacted).
 
 ## Contents
 
@@ -98,13 +98,13 @@ Scoring has three steps:
 
 For example, the Browser row of the sample report above:
 
-| App | This week (p75) | Compared with | Result |
+| App | This week | Compared with | Result |
 |---|---|---|---|
-| Perspective-Gold | CLS 0.434 | Red above 0.25 | RED |
-| Buying Program Simulator | LCP 2.06 s | Amber above 2.5 s | Under both thresholds |
-| Buying Program Simulator | 7.50 JavaScript errors per 100 page views | Amber above 5, red above 25 | AMBER |
+| Buying Program Simulator | p75 LCP 2.09 s | Amber above 2.5 s, red above 4 s | Under both thresholds |
+| Buying Program Simulator | p75 INP 72 ms, p75 CLS 0.005 | Amber above 200 ms and above 0.1 | Under all thresholds |
+| Buying Program Simulator | 6.06 JavaScript errors per 100 page views | Amber above 5, red above 25 | AMBER |
 
-So Browser is RED, because its worst app is red. The thresholds are workflow inputs, so you can change them (see [Change things](#change-things)).
+So the app is AMBER, its worst result, and Browser is AMBER because its worst app is amber. The thresholds are workflow inputs, so you can change them (see [Change things](#change-things)).
 
 **3. Ask Autopilot why (`ask`, `newrelic.autopilot.run`).**
 - The step sends one prompt containing the health summary and the 3 alert events.
@@ -191,7 +191,7 @@ status COMPLETED
   ask_analysed: true
   email_success: true
   record_success: true
-  summary: "Alert events RED; APM services AMBER; Hosts GREEN; Synthetics RED; Service levels NO DATA"
+  summary: "Alert events RED; Browser AMBER; Mobile NODATA; APM services RED; Hosts RED; Synthetics RED; Service levels RED"
 ```
 
 Check the email. Then confirm the history event arrived:
