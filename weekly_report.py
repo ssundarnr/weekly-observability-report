@@ -141,6 +141,8 @@ QUERIES = {
 # Browser and mobile apps in the account (NerdGraph, not NRQL): an area with no apps is left out, not reported as a gap.
 ENTITY_GQL = "query($q: String!) { actor { entitySearch(query: $q) { types { domain count } } } }"
 ENTITY_SEARCH = "domain IN ('BROWSER', 'MOBILE') AND type = 'APPLICATION' AND accountId = "
+# The account name for the email heading. The account ID is a template in the query text.
+ACCOUNT_GQL = "{ actor { account(id: ACCOUNT_ID) { name } } }"
 # Source numbering in the email: the NRQL queries, then the app lookup.
 SOURCES = dict(QUERIES, apps="NerdGraph entitySearch: " + ENTITY_SEARCH + "<this account>")
 
@@ -176,22 +178,39 @@ SELECTORS = {
     "sls": '.results | map(select(.budget != null)) | {n: length, low: (sort_by(.budget) | .[:8] | '
            'map({n: ((.name // "unnamed") | .[0:50]), b: (.budget | round)}))}',
 }
-# Browser and mobile rows are compact arrays [app, previous (1) or current (0), values...]: this week's top apps by sample
-# count, each with its previous-week row. n counts all of this week's apps.
+# Browser and mobile rows are compact arrays [app, previous (1) or current (0), values...]: for each metric, this week's
+# worst apps among those with enough samples, each with its previous-week row. The area takes its worst value, so keeping
+# the worst app per metric keeps the status right. n counts all of this week's apps.
 APP_PREV = '((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end)'
+# The sample minimums are workflow inputs, written into the selectors as templates (values in the local preview).
+MIN_INPUTS = {"__MINB__": "minBrowserSamples", "__MINM__": "minMobileSessions"}
 
 
-def top_apps(count_attr, limit):
-    return ('.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(%s // 0)) | .[:%d]'
-            ' | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm'
-            ' | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([' % (count_attr, limit))
+def worst_apps(min_token, picks):
+    # picks: (sample count, value to rank by, how many apps to keep)
+    keep = " + ".join('($cr | map(select((%s // 0) >= $ms)) | sort_by(-(%s)) | .[:%d] | map(.appName // "unnamed"))'
+                      % pick for pick in picks)
+    return ('.results | (map(select(.comparison != "previous"))) as $cr | ("%s" | tonumber) as $ms'
+            ' | (%s | map({key: ., value: 1}) | from_entries) as $tm'
+            ' | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([' % (min_token, keep))
+
+
+def selector(key, values=None):
+    s = SELECTORS[key]
+    for token, name in MIN_INPUTS.items():
+        s = s.replace(token, values[name] if values else "${{ .workflowInputs.%s }}" % name)
+    return s
 
 
 SELECTORS.update({
-    "br": top_apps(".nl", 6) + APP_PREV + ', ' + R2 % '(.lcp["75"] // 0)' + ', (.nl // 0), '
+    "br": worst_apps("__MINB__", [(".nl", '.lcp["75"] // 0', 2), (".ni", '.inp["75"] // 0', 2), (".nc", '.cls["75"] // 0', 2)])
+          + APP_PREV + ', ' + R2 % '(.lcp["75"] // 0)' + ', (.nl // 0), '
           '(((.inp["75"] // 0) * 1000) | round), (.ni // 0), ((((.cls["75"] // 0) * 1000) | round) / 1000), (.nc // 0)]))}',
-    "js": top_apps(".pv", 6) + APP_PREV + ', (.pv // 0), (.jse // 0)]))}',
-    "mob": top_apps(".sessions", 6) + APP_PREV + ', (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}',
+    "js": worst_apps("__MINB__", [(".pv", "if (.pv // 0) > 0 then (.jse // 0) / .pv else 0 end", 6)])
+          + APP_PREV + ', (.pv // 0), (.jse // 0)]))}',
+    "mob": worst_apps("__MINM__", [(".sessions", "if (.sessions // 0) > 0 then (.crashes // 0) / .sessions else 0 end", 3),
+                                   (".sessions", "if (.reqs // 0) > 0 then (.reqErrs // 0) / (.reqs + (.reqErrs // 0)) else 0 end", 3)])
+           + APP_PREV + ', (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}',
     # A two-attribute FACET returns facet: [appName, appVersion]
     "mob_ver": '.results | map([((.facet[0] // "unnamed") | tostring | .[0:30]), ((.facet[1] // "unknown") | tostring | .[0:20]), '
                '(.crashes // 0)]) | .[:1]',
@@ -246,7 +265,8 @@ GAPS_EXPR = f"({P('sa')}.gaps + {P('sb')}.gaps + {P('sc')}.gaps + {P('sd')}.gaps
 RENDER_INPUT = (f"{P('sa')} as $a | {P('sb')} as $b | {P('sc')} as $c | {P('sd')} as $d | "
                 "{a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), "
                 "g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, "
-                "m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok}")
+                "m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok, id: (.workflowConstants.accountId | tostring), "
+                "an: ((.steps.acct.outputs.data.actor.account.name // \"\") | tostring | .[0:60])}")
 # Tested 2026-11-04: Autopilot did not see `context` items by name and asked for the incidents, so the
 # facts go in the prompt text itself. Each fact is capped at 1,000 characters.
 ACCOUNT_EXPR = ".workflowConstants.accountId | tostring"
@@ -372,9 +392,11 @@ def build_yaml(stage):
            "workflowInputs:\n" + inputs.rstrip("\n"), "", "steps:"]
     for k, q in QUERIES.items():
         out.append(f"  - name: q_{k}\n    type: action\n    action: newrelic.nrdb.query\n    version: '1'\n"
-                   f"    inputs:\n      query: {yq(q)}\n      selectors:\n        - name: d\n          expression: {yq(SELECTORS[k])}")
+                   f"    inputs:\n      query: {yq(q)}\n      selectors:\n        - name: d\n          expression: {yq(selector(k))}")
     out.append("  - name: apps\n    type: action\n    action: newrelic.nerdgraph.execute\n    version: '1'\n    inputs:\n"
                f"      graphql: {yq(ENTITY_GQL)}\n      variables:\n        q: {yq(tpl(ENTITY_Q_EXPR))}")
+    out.append("  - name: acct\n    type: action\n    action: newrelic.nerdgraph.execute\n    version: '1'\n    inputs:\n"
+               f"      graphql: {yq(no_double_brace(ACCOUNT_GQL).replace('ACCOUNT_ID', tpl('.workflowConstants.accountId')))}")
     for name, file_name, expr in SCRIPTS:
         out.append(script_step(name, file_name, expr))
     summary = f'{AREAS_EXPR} | map(.name + " " + .status) | join("; ")'
@@ -600,11 +622,12 @@ def preview():
              "workflowConstants": {"accountId": NR_ACCOUNT_ID}}
     for k, q in QUERIES.items():
         rows = nrql(q)
-        state["steps"][f"q_{k}"] = {"outputs": {"d": jq(SELECTORS[k], {"results": rows})}}
+        state["steps"][f"q_{k}"] = {"outputs": {"d": jq(selector(k, INPUT_DEFAULTS), {"results": rows})}}
         print(f"  {k}: {len(rows)} row(s) -> {len(json.dumps(state['steps'][f'q_{k}']['outputs']['d']))} chars after trim")
     q = jq(ENTITY_Q_EXPR, state, raw=True)
     state["steps"]["apps"] = {"outputs": {"data": nerdgraph(ENTITY_GQL, {"q": q})}}
     print("  apps:", json.dumps(state["steps"]["apps"]["outputs"]["data"]["actor"]["entitySearch"]["types"]))
+    state["steps"]["acct"] = {"outputs": {"data": nerdgraph(ACCOUNT_GQL.replace("ACCOUNT_ID", str(NR_ACCOUNT_ID)))}}
     state["now"] = time.time()
     for name, file_name, expr in SCRIPTS:
         # jq `now` is the local clock here, as it is the WA clock in the workflow

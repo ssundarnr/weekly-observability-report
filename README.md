@@ -61,10 +61,10 @@ The Browser thresholds are Google's Core Web Vitals cut-offs. APM services count
 ## How the workflow works
 
 ```
-14 queries → app lookup → 4 scoring scripts → Autopilot → build email → format Autopilot text → send email → save history → save run summary
+14 queries → app lookup → account name lookup → 4 scoring scripts → Autopilot → build email → format Autopilot text → send email → save history → save run summary
 ```
 
-The workflow has 24 steps, which run in order inside New Relic. No server of your own is needed.
+The workflow has 26 steps, which run in order inside New Relic. No server of your own is needed.
 
 **1. Collect the numbers (14 `newrelic.nrdb.query` steps, named `q_…`).** Each step runs one NRQL query over the last 7 days and the 7 days before. A jq selector keeps only the rows needed.
 
@@ -81,7 +81,7 @@ The workflow has 24 steps, which run in order inside New Relic. No server of you
 | `q_br`, `q_js` | Which browser apps have slow Core Web Vitals (LCP, INP, CLS at p75), or many JavaScript errors per page view? |
 | `q_mob`, `q_mob_ver` | Which mobile apps crash most, or have failing HTTP requests, and which app version crashed most? |
 
-The `apps` step (`newrelic.nerdgraph.execute`) counts the account's browser and mobile apps. That is how the workflow tells "no apps" (area left out) from "apps that sent no data" (a data gap).
+The `apps` step (`newrelic.nerdgraph.execute`) counts the account's browser and mobile apps. That is how the workflow tells "no apps" (area left out) from "apps that sent no data" (a data gap). The `acct` step (also `newrelic.nerdgraph.execute`) looks up the account name for the email heading.
 
 **2. Score each area (4 `script.run` Python steps).** These apply the rules in the table above. No AI is involved.
 - `sa`: Alert events, including the 3 longest-open critical ones.
@@ -117,7 +117,7 @@ So Browser is RED, because its worst app is red. The thresholds are workflow inp
 - **The report doesn't depend on Autopilot.** If Autopilot gives no usable answer, the health summary, alert events and data gaps are still correct, and section 3 says why there is no analysis.
 
 **4. Build the email (`r1`).**
-- This step builds the header, the coloured health summary table, the critical alert events list, the data gaps, the subject line (for example `[RED] Weekly observability report, 2026-11-04`), and the history event.
+- This step builds the header, the coloured health summary table, the critical alert events list, the data gaps, the subject line (for example `[RED] Weekly observability report, account 1234567, 2026-11-04`), and the history event.
 - It also checks whether Autopilot's reply really is an analysis. If not, section 3 says "Autopilot gave no analysis because …" and gives the reason.
 
 **5. Format Autopilot's text (`md`).** Turns Autopilot's markdown (headings, bold, lists, tables) into email HTML. Very long replies are cut to fit, with a note saying so.
@@ -254,9 +254,8 @@ python weekly_report.py --delete
 ## Limits to know
 
 - **Old alert events are missed.** Critical alert events that opened more than 7 days ago and are still open are not counted, so "open now" can undercount.
-- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, 6 browser apps by Core Web Vitals samples, 6 by page views, and 6 mobile apps by sessions. Each scoring step can hold at most 10,000 characters of data, so the query results are trimmed to these rows. Most lists are sorted worst first, so the area's status is still right and only counts such as "hosts above 85%" are capped at those numbers. There are two exceptions, below.
+- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, the 2 browser apps with the worst LCP, INP and CLS each, the 6 with the most JavaScript errors per page view, and the 3 mobile apps with the highest crash rate and HTTP error rate each. Each scoring step can hold at most 10,000 characters of data, so the query results are trimmed to these rows. The lists keep the worst items, so the area's status is still right and only counts such as "hosts above 85%" are capped at those numbers. Apps with too few samples or sessions are left out before the worst are picked. There is one exception, below.
 - **The APM "slower than last week" check covers only some services.** It looks at the 12 services with the highest error rate and the 5 slowest by p95. A service outside those two groups that got slower is not flagged amber.
-- **Browser and Mobile keep the busiest apps, not the worst.** The 6 apps are chosen by traffic (samples, page views or sessions). In an account with more than 6 browser or mobile apps, a red app outside the busiest 6 is missed, and the area can show a better status than it should.
 - **Autopilot's text varies.** It doesn't always follow the requested format, and it can be wrong. Treat its causes as leads to check, not conclusions.
 - **Charts are dropped.** Autopilot sometimes includes charts, which the email leaves out.
 - **Run cost.** Every run, scheduled or manual, sends an email and uses Autopilot capacity.

@@ -197,7 +197,7 @@ steps:
       query: 'FROM PageViewTiming SELECT percentile(largestContentfulPaint, 75) AS lcp, count(largestContentfulPaint) AS nl, percentile(interactionToNextPaint, 75) AS inp, count(interactionToNextPaint) AS ni, percentile(cumulativeLayoutShift, 75) AS cls, count(cumulativeLayoutShift) AS nc FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
       selectors:
         - name: d
-          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.nl // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (((.lcp["75"] // 0) * 100 | round) / 100), (.nl // 0), (((.inp["75"] // 0) * 1000) | round), (.ni // 0), ((((.cls["75"] // 0) * 1000) | round) / 1000), (.nc // 0)]))}'
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ("${{ .workflowInputs.minBrowserSamples }}" | tonumber) as $ms | (($cr | map(select((.nl // 0) >= $ms)) | sort_by(-(.lcp["75"] // 0)) | .[:2] | map(.appName // "unnamed")) + ($cr | map(select((.ni // 0) >= $ms)) | sort_by(-(.inp["75"] // 0)) | .[:2] | map(.appName // "unnamed")) + ($cr | map(select((.nc // 0) >= $ms)) | sort_by(-(.cls["75"] // 0)) | .[:2] | map(.appName // "unnamed")) | map({key: ., value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (((.lcp["75"] // 0) * 100 | round) / 100), (.nl // 0), (((.inp["75"] // 0) * 1000) | round), (.ni // 0), ((((.cls["75"] // 0) * 1000) | round) / 1000), (.nc // 0)]))}'
   - name: q_js
     type: action
     action: newrelic.nrdb.query
@@ -206,7 +206,7 @@ steps:
       query: 'FROM PageView, JavaScriptError SELECT filter(count(*), WHERE eventType() = ''PageView'') AS pv, filter(count(*), WHERE eventType() = ''JavaScriptError'') AS jse FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
       selectors:
         - name: d
-          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.pv // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.pv // 0), (.jse // 0)]))}'
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ("${{ .workflowInputs.minBrowserSamples }}" | tonumber) as $ms | (($cr | map(select((.pv // 0) >= $ms)) | sort_by(-(if (.pv // 0) > 0 then (.jse // 0) / .pv else 0 end)) | .[:6] | map(.appName // "unnamed")) | map({key: ., value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.pv // 0), (.jse // 0)]))}'
   - name: q_mob
     type: action
     action: newrelic.nrdb.query
@@ -215,7 +215,7 @@ steps:
       query: 'FROM MobileSession, MobileCrash, MobileRequest, MobileRequestError SELECT filter(count(*), WHERE eventType() = ''MobileSession'') AS sessions, filter(count(*), WHERE eventType() = ''MobileCrash'') AS crashes, filter(count(*), WHERE eventType() = ''MobileRequest'') AS reqs, filter(count(*), WHERE eventType() = ''MobileRequestError'') AS reqErrs FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
       selectors:
         - name: d
-          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ($cr | sort_by(-(.sessions // 0)) | .[:6] | map({key: (.appName // "unnamed"), value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}'
+          expression: '.results | (map(select(.comparison != "previous"))) as $cr | ("${{ .workflowInputs.minMobileSessions }}" | tonumber) as $ms | (($cr | map(select((.sessions // 0) >= $ms)) | sort_by(-(if (.sessions // 0) > 0 then (.crashes // 0) / .sessions else 0 end)) | .[:3] | map(.appName // "unnamed")) + ($cr | map(select((.sessions // 0) >= $ms)) | sort_by(-(if (.reqs // 0) > 0 then (.reqErrs // 0) / (.reqs + (.reqErrs // 0)) else 0 end)) | .[:3] | map(.appName // "unnamed")) | map({key: ., value: 1}) | from_entries) as $tm | {n: ($cr | length), r: (map(select($tm[.appName // "unnamed"] != null)) | map([((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end), (.sessions // 0), (.crashes // 0), (.reqs // 0), (.reqErrs // 0)]))}'
   - name: q_mob_ver
     type: action
     action: newrelic.nrdb.query
@@ -233,6 +233,12 @@ steps:
       graphql: 'query($q: String!) { actor { entitySearch(query: $q) { types { domain count } } } }'
       variables:
         q: '${{ "domain IN (''BROWSER'', ''MOBILE'') AND type = ''APPLICATION'' AND accountId = " + (.workflowConstants.accountId | tostring) }}'
+  - name: acct
+    type: action
+    action: newrelic.nerdgraph.execute
+    version: '1'
+    inputs:
+      graphql: '{ actor { account(id: ${{ .workflowConstants.accountId }}) { name } } }'
   - name: sa
     type: action
     action: script.run
@@ -548,13 +554,15 @@ steps:
       runtime: PYTHON_3_13
       script: |
         import json
-        I = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | (.steps.sa.outputs.payload | fromjson) as $a | (.steps.sb.outputs.payload | fromjson) as $b | (.steps.sc.outputs.payload | fromjson) as $c | (.steps.sd.outputs.payload | fromjson) as $d | {a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok} | tojson | tojson }})
+        I = json.loads(${{ (.steps.ask.outputs.answer | if type == "string" then (. as $s | try fromjson catch $s) else . end) as $ans | (if ($ans | type) == "object" then ([$ans.card.body[]? | select(.type == "Text") | .value] | join("\n\n")) elif $ans == null then "" else ($ans | tostring) end) as $raw | (if (.steps.ask.outputs.success | tostring) != "true" then {ok: false, text: ("Autopilot gave no analysis because the Autopilot step failed: " + ((.steps.ask.outputs.errorMessage // "no error message") | tostring | .[0:600]))} elif ($raw | contains("NO ANALYSIS:")) then {ok: false, text: ("Autopilot gave no analysis because " + ($raw | split("NO ANALYSIS:") | .[1] | ltrimstr(" ") | .[0:600]))} elif ($raw | length) == 0 then {ok: false, text: "Autopilot gave no analysis because it returned an empty answer."} elif ($raw | ascii_downcase | contains("probable cause") or contains("root cause") or contains("recommended action")) then {ok: true, text: $raw} else {ok: false, text: ("Autopilot gave no analysis because its reply named no causes or actions. Its reply began: " + ($raw | .[0:600]))} end) as $ap | (.steps.sa.outputs.payload | fromjson) as $a | (.steps.sb.outputs.payload | fromjson) as $b | (.steps.sc.outputs.payload | fromjson) as $c | (.steps.sd.outputs.payload | fromjson) as $d | {a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok, id: (.workflowConstants.accountId | tostring), an: ((.steps.acct.outputs.data.actor.account.name // "") | tostring | .[0:60])} | tojson | tojson }})
         COL = {"RED": "#c62828", "AMBER": "#ef6c00", "GREEN": "#2e7d32", "NODATA": "#757575"}
         LAB = {"RED": "RED", "AMBER": "AMBER", "GREEN": "GREEN", "NODATA": "NO DATA"}
         RANK = {"RED": 3, "AMBER": 2, "NODATA": 1, "GREEN": 0}
         REF = json.loads("{\"inc_crit\": 1, \"inc_warn\": 2, \"inc_opened\": 3, \"inc_open_rows\": 4, \"counts\": 5, \"apm\": 6, \"hosts\": 7, \"synth_overall\": 8, \"synth_monitors\": 9, \"sls\": 10, \"br\": 11, \"js\": 12, \"mob\": 13, \"mob_ver\": 14, \"apps\": 15}")
         A, M = I["a"], I["m"]
         overall = max([a["status"] for a in A], key=lambda s: RANK[s])
+        # The account name comes from a NerdGraph lookup; without it the heading shows the ID only.
+        acct = ("%s (%s)" % (I["an"], I["id"])) if I["an"] else "account %s" % I["id"]
         TD = "<td style='padding:6px;border-bottom:1px solid #eee;vertical-align:top'>"
 
 
@@ -596,9 +604,9 @@ steps:
             lines.append("(%d more open critical alert events not listed. %s)" % (I["n"] - len(I["t"]), refs(["inc_open_rows"])))
         lines.append("Alert events that opened before the 7-day window and are still open are not counted.")
         head = ("<div style='font-family:Arial,Helvetica,sans-serif;max-width:860px;color:#222'>"
-                "<h1 style='font-size:20px;margin:0 0 4px'>Weekly observability report</h1>"
+                "<h1 style='font-size:20px;margin:0 0 4px'>Weekly observability report of %s</h1>"
                 "<div style='font-size:12px;color:#555'>Generated %s. Overall: %s</div>%s%s" % (
-                    esc(I["gen"]), badge(overall), h2("1. Health summary") + table,
+                    esc(acct), esc(I["gen"]), badge(overall), h2("1. Health summary") + table,
                     h2("2. Critical alert events") + pre("\n".join(lines))))
         tail = h2("4. Data gaps") + pre("\n".join(I["g"]) if I["g"] else "None. Every health area returned data.")
         attrs = {"overall": overall, "generatedAt": I["gen"], "autopilotOk": str(I["ok"]).lower() == "true",
@@ -608,7 +616,7 @@ steps:
             attrs["status_" + a["key"]] = a["status"]
         print(json.dumps({
             "head": head, "tail": tail, "overall": overall,
-            "subject": "[%s] Weekly observability report, %s" % (LAB[overall], I["gen"][:10]),
+            "subject": "[%s] Weekly observability report, account %s, %s" % (LAB[overall], I["id"], I["gen"][:10]),
             "events": [dict(attrs, eventType="WeeklyObservabilityReport")]}))
   - name: md
     type: action
