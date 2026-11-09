@@ -254,8 +254,9 @@ python weekly_report.py --delete
 ## Limits to know
 
 - **Old alert events are missed.** Critical alert events that opened more than 7 days ago and are still open are not counted, so "open now" can undercount.
-- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, 6 browser apps by Core Web Vitals samples, 6 by page views, and 6 mobile apps by sessions. Counts such as "hosts above 85%" are therefore capped at those numbers.
-- **Mobile HTTP errors need `MobileRequest` events.** If an app sends errors but no `MobileRequest` events, the email shows the error count instead of a rate.
+- **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, 6 browser apps by Core Web Vitals samples, 6 by page views, and 6 mobile apps by sessions. Each scoring step can hold at most 10,000 characters of data, so the query results are trimmed to these rows. Most lists are sorted worst first, so the area's status is still right and only counts such as "hosts above 85%" are capped at those numbers. There are two exceptions, below.
+- **The APM "slower than last week" check covers only some services.** It looks at the 12 services with the highest error rate and the 5 slowest by p95. A service outside those two groups that got slower is not flagged amber.
+- **Browser and Mobile keep the busiest apps, not the worst.** The 6 apps are chosen by traffic (samples, page views or sessions). In an account with more than 6 browser or mobile apps, a red app outside the busiest 6 is missed, and the area can show a better status than it should.
 - **Autopilot's text varies.** It doesn't always follow the requested format, and it can be wrong. Treat its causes as leads to check, not conclusions.
 - **Charts are dropped.** Autopilot sometimes includes charts, which the email leaves out.
 - **Run cost.** Every run, scheduled or manual, sends an email and uses Autopilot capacity.
