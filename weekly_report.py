@@ -162,7 +162,10 @@ SELECTORS = {
            ', p: ((((.p95["95"] // 0) * 10000) | round) / 10),'
            ' q: (($pm[.appName].p95["95"] // null) | if . == null then null else ((. * 10000 | round) / 10) end),'
            ' pr: (($pm[.appName].reqs // 0) | round)})) as $it'
+           ' | ("__MINR__" | tonumber) as $mr'
+           # s: the 5 services whose p95 rose most against last week, among those with enough requests in both weeks
            ' | {n: ($it | length), e: ($it | sort_by(-.e) | .[:12]), l: ($it | sort_by(-.p) | .[:5]),'
+           ' s: ($it | map(select(.r >= $mr and .pr >= $mr and (.q // 0) > 0)) | sort_by(-(.p / .q)) | .[:5]),'
            ' pv: ($pr | sort_by(-(.errPct // 0)) | .[:12] | map([((.reqs // 0) | round), ' + R2 % "(.errPct // 0)" + "]))}",
     "hosts": '.results | (map(select(.comparison == "previous"))) as $pr | (map(select(.comparison != "previous"))) as $cr'
              ' | ($cr | map(. + {pk: ([(.["max.cpuPercent"] // 0), (.["max.memoryUsedPercent"] // 0), '
@@ -182,8 +185,8 @@ SELECTORS = {
 # worst apps among those with enough samples, each with its previous-week row. The area takes its worst value, so keeping
 # the worst app per metric keeps the status right. n counts all of this week's apps.
 APP_PREV = '((.appName // "unnamed") | .[0:30]), (if .comparison == "previous" then 1 else 0 end)'
-# The sample minimums are workflow inputs, written into the selectors as templates (values in the local preview).
-MIN_INPUTS = {"__MINB__": "minBrowserSamples", "__MINM__": "minMobileSessions"}
+# The sample and request minimums are workflow inputs, written into the selectors as templates (values in the local preview).
+MIN_INPUTS = {"__MINB__": "minBrowserSamples", "__MINM__": "minMobileSessions", "__MINR__": "minRequests"}
 
 
 def worst_apps(min_token, picks):

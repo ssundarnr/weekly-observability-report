@@ -152,7 +152,7 @@ steps:
       query: 'FROM Transaction SELECT count(*) AS reqs, percentage(count(*), WHERE error IS true) AS errPct, percentile(duration, 95) AS p95 FACET appName SINCE 7 days ago COMPARE WITH 1 week ago LIMIT 100'
       selectors:
         - name: d
-          expression: '.results | (map(select(.comparison == "previous"))) as $pr | (map(select(.comparison != "previous"))) as $cr | ($pr | map({key: .appName, value: .}) | from_entries) as $pm | ($cr | map({a: (.appName | .[0:36]), r: ((.reqs // 0) | round), e: (((.errPct // 0) * 100 | round) / 100), p: ((((.p95["95"] // 0) * 10000) | round) / 10), q: (($pm[.appName].p95["95"] // null) | if . == null then null else ((. * 10000 | round) / 10) end), pr: (($pm[.appName].reqs // 0) | round)})) as $it | {n: ($it | length), e: ($it | sort_by(-.e) | .[:12]), l: ($it | sort_by(-.p) | .[:5]), pv: ($pr | sort_by(-(.errPct // 0)) | .[:12] | map([((.reqs // 0) | round), (((.errPct // 0) * 100 | round) / 100)]))}'
+          expression: '.results | (map(select(.comparison == "previous"))) as $pr | (map(select(.comparison != "previous"))) as $cr | ($pr | map({key: .appName, value: .}) | from_entries) as $pm | ($cr | map({a: (.appName | .[0:36]), r: ((.reqs // 0) | round), e: (((.errPct // 0) * 100 | round) / 100), p: ((((.p95["95"] // 0) * 10000) | round) / 10), q: (($pm[.appName].p95["95"] // null) | if . == null then null else ((. * 10000 | round) / 10) end), pr: (($pm[.appName].reqs // 0) | round)})) as $it | ("${{ .workflowInputs.minRequests }}" | tonumber) as $mr | {n: ($it | length), e: ($it | sort_by(-.e) | .[:12]), l: ($it | sort_by(-.p) | .[:5]), s: ($it | map(select(.r >= $mr and .pr >= $mr and (.q // 0) > 0)) | sort_by(-(.p / .q)) | .[:5]), pv: ($pr | sort_by(-(.errPct // 0)) | .[:12] | map([((.reqs // 0) | round), (((.errPct // 0) * 100 | round) / 100)]))}'
   - name: q_hosts
     type: action
     action: newrelic.nrdb.query
@@ -309,9 +309,10 @@ steps:
 
 
         mr, amb = f("minRequests"), f("errAmberPct")
-        for x in A["e"] + A["l"]:
+        # e: highest error rate, l: slowest p95, s: biggest p95 rise against last week (so the worst slowdown is always seen)
+        for x in A["e"] + A["l"] + A["s"]:
             x["slow"] = bool(x["r"] >= mr and x["q"] and x["pr"] >= mr and x["p"] > x["q"] * (1 + f("p95IncreasePct") / 100.0))
-        rows = [x for x in A["e"] + A["l"] if x["r"] >= mr]
+        rows = [x for x in A["e"] + A["l"] + A["s"] if x["r"] >= mr]
         red = [x for x in rows if x["e"] > f("errRedPct")]
         amber = [x for x in rows if x["e"] > amb or x["slow"]]
         if not I["ec"].get("Transaction"):
@@ -324,12 +325,15 @@ steps:
         tp = sorted(A["l"], key=lambda x: -x["p"])[:3]
         lines = ["Top errors: %s %.2f%% (%d requests)" % (x["a"], x["e"], x["r"]) for x in te]
         lines += ["Top p95: %s %.0f ms%s" % (x["a"], x["p"], ", slower than last week" if x["slow"] else "") for x in tp]
+        sl = [x for x in A["s"] if x["slow"]][:1]
+        lines += ["Slowed most: %s p95 %.0f ms (last week %.0f ms, +%.0f%%)" % (x["a"], x["p"], x["q"], 100.0 * (x["p"] / x["q"] - 1)) for x in sl]
         cut = len(A["e"]) >= 12 and A["e"][-1]["e"] > amb
         print(json.dumps({
             "area": {"key": "apm", "name": "APM services", "status": st,
                      "headline": "%d of %d services above %s%% errors" % (over, A["n"], C["errAmberPct"]),
                      "delta": "services above %s%% errors: %d (prev %d)" % (C["errAmberPct"], over, prev),
-                     "rows": [lines[0]] + lines[len(te):len(te) + 1] if lines else [], "refs": ["apm"]},
+                     "rows": ([lines[0]] + (lines[-1:] if sl and not tp[0]["slow"] else lines[len(te):len(te) + 1])) if lines else [],
+                     "refs": ["apm"]},
             "gaps": (["APM: no Transaction events in the Report Window."] if st == "NODATA" else [])
                     + (["APM: more than 12 services are above the amber error rate; counts are lower bounds."] if cut else []),
             "ctx": ["APM: " + " | ".join(lines or ["no data"])],
