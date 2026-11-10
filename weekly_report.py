@@ -261,12 +261,33 @@ SCRIPTS = [
 AREAS_EXPR = f"([{P('sa')}.area] + {P('sd')}.areas + [{P('sb')}.area] + {P('sc')}.areas)"
 GAPS_EXPR = f"({P('sa')}.gaps + {P('sb')}.gaps + {P('sc')}.gaps + {P('sd')}.gaps)"
 # Object values must be simple terms in the WA jq dialect (`{t: (expr).top}` fails), so bind the payloads first.
-# Two sub-rows per area and 120-character titles keep rc_render under SCRIPT_LIMIT with all seven areas.
-RENDER_INPUT = (f"{P('sa')} as $a | {P('sb')} as $b | {P('sc')} as $c | {P('sd')} as $d | "
-                "{a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {rows: (.rows | .[:2])})), "
-                "g: ($a.gaps + $b.gaps + $c.gaps + $d.gaps), t: ($a.top | map(. + {t: (.t | .[0:120])})), n: $a.n, "
-                "m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok, id: (.workflowConstants.accountId | tostring), "
-                "an: ((.steps.acct.outputs.data.actor.account.name // \"\") | tostring | .[0:60])}")
+# Every text field is capped, so rc_render has a fixed worst case under SCRIPT_LIMIT (measured with test data).
+
+
+def clip(expr, n):
+    # Cut to n characters, ending in "..." when cut. Quotes, backslashes and control characters become ' / and a space:
+    # after '| tojson | tojson' each would cost up to 4 characters. explode/implode avoids quote escapes in the template.
+    return (f'(({expr} // "") | tostring | (if length > {n} then .[0:{n - 3}] + "..." else . end) | explode'
+            ' | map(if . == 34 then 39 elif . == 92 then 47 elif . < 32 then 32 else . end) | implode)')
+
+
+RENDER_CAPS = {"headline": 100, "delta": 70, "row": 100, "gap": 110, "gaps": 4, "title": 80, "entity": 40, "account": 50}
+
+
+def render_input(caps):
+    return (f"{P('sa')} as $a | {P('sb')} as $b | {P('sc')} as $c | {P('sd')} as $d | "
+            "{a: (([$a.area] + $d.areas + [$b.area] + $c.areas) | map(. + {headline: %s, delta: %s, rows: (.rows | .[:2] | map(%s))})), "
+            % (clip(".headline", caps["headline"]), clip(".delta", caps["delta"]), clip(".", caps["row"])) +
+            # Gaps beyond the cap are counted in a last line, never dropped silently.
+            "g: (($a.gaps + $b.gaps + $c.gaps + $d.gaps) as $G | if ($G | length) > %d then ($G | .[:%d] | map(%s)) + "
+            "[((($G | length) - %d) | tostring) + \" more data gaps not shown.\"] else ($G | map(%s)) end), "
+            % (caps["gaps"], caps["gaps"] - 1, clip(".", caps["gap"]), caps["gaps"] - 1, clip(".", caps["gap"])) +
+            "t: ($a.top | map(. + {t: %s, e: %s})), n: $a.n, " % (clip(".t", caps["title"]), clip(".e", caps["entity"])) +
+            "m: ($a.m + $b.m + $c.m + $d.m), gen: $a.gen, ok: $ap.ok, id: (.workflowConstants.accountId | tostring), "
+            "an: %s}" % clip(".steps.acct.outputs.data.actor.account.name", caps["account"]))
+
+
+RENDER_INPUT = render_input(RENDER_CAPS)
 # Tested 2026-11-04: Autopilot did not see `context` items by name and asked for the incidents, so the
 # facts go in the prompt text itself. Each fact is capped at 1,000 characters.
 ACCOUNT_EXPR = ".workflowConstants.accountId | tostring"
@@ -401,8 +422,12 @@ def build_yaml(stage):
         out.append(script_step(name, file_name, expr))
     summary = f'{AREAS_EXPR} | map(.name + " " + .status) | join("; ")'
     if stage == "compute":
+        # The email step runs here too (without Autopilot, so section 3 says the step failed), to test RENDER_INPUT in WA jq.
+        # A state value is limited to 3,000 characters, so the step itself is the test, not a state expression.
+        out.append(script_step("r1", "rc_render.py", RENDER_INPUT))
         out.append("  - name: save\n    type: state\n    inputs:\n"
-                   f"      summary: {yq('${{ ' + no_double_brace(summary) + ' }}')}")
+                   f"      summary: {yq('${{ ' + no_double_brace(summary) + ' }}')}\n"
+                   f"      subject: {yq(tpl('.steps.r1.outputs.payload | fromjson | .subject'))}")
         return "\n".join(out) + "\n"
     out.append("  - name: ask\n    type: action\n    action: newrelic.autopilot.run\n    version: '1'\n    inputs:\n"
                f"      prompt: {yq(tpl(PROMPT_EXPR))}\n      context:\n"
@@ -537,7 +562,7 @@ def run(stage, log_level="INFO"):
                        f'idempotencyKey: "{uuid.uuid4()}" options: {{logLevel: {log_level}}}) {{ runId }} }}'
                        )["workflowAutomationStartWorkflowRun"]["runId"]
     print("run", run_id)
-    keys = (["summary"] if stage == "compute" else
+    keys = (["summary", "subject"] if stage == "compute" else
             ["ask_success", "ask_analysed", "ask_error", "email_success", "email_error", "record_success", "record_error", "summary"])
     info = poll(run_id, keys)
     print(" " * 40)

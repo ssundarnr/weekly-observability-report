@@ -94,7 +94,7 @@ Scoring has three steps:
 1. **Score each item.** An item is one service, host, monitor, service level or app. Its numbers for the week are compared with the red and amber thresholds in the table above. Items with too little data are skipped (fewer than 100 requests for a service, 20 samples of a browser metric, or 50 sessions for a mobile app), so one slow request can't turn an area red.
 2. **The area takes its worst item's status.** One red host makes Hosts red, however healthy the other hosts are. An area whose source sent no data is NO DATA, never green.
    Alert events is the exception: it is scored on counts (any critical alert event still open makes it red), and a week with no alert events is green.
-3. **The overall status is the worst area's status**, in the order RED, AMBER, NO DATA, GREEN. It goes in the subject line, for example `[RED] Weekly observability report`.
+3. **The overall status is the worst area's status**, in the order RED, AMBER, NO DATA, GREEN. It goes in the subject line, for example `[RED] Weekly O11y report, account 1234567`.
 
 For example, the Browser row of the sample report above:
 
@@ -117,7 +117,7 @@ So the app is AMBER, its worst result, and Browser is AMBER because its worst ap
 - **The report doesn't depend on Autopilot.** If Autopilot gives no usable answer, the health summary, alert events and data gaps are still correct, and section 3 says why there is no analysis.
 
 **4. Build the email (`r1`).**
-- This step builds the header, the coloured health summary table, the critical alert events list, the data gaps, the subject line (for example `[RED] Weekly observability report, account 1234567, 2026-11-04`), and the history event.
+- This step builds the header, the coloured health summary table, the critical alert events list, the data gaps, the subject line (for example `[RED] Weekly O11y report, account 1234567`), and the history event.
 - It also checks whether Autopilot's reply really is an analysis. If not, section 3 says "Autopilot gave no analysis because …" and gives the reason.
 
 **5. Format Autopilot's text (`md`).** Turns Autopilot's markdown (headings, bold, lists, tables) into email HTML. Very long replies are cut to fit, with a note saying so.
@@ -260,6 +260,7 @@ python weekly_report.py --delete
 - **Old alert events are missed.** Critical alert events that opened more than 7 days ago and are still open are not counted, so "open now" can undercount.
 - **Rankings use the top rows only:** 12 services by error rate, 5 by p95, 15 hosts by peak, 10 monitors, 8 service levels, the 2 browser apps with the worst LCP, INP and CLS each, the 6 with the most JavaScript errors per page view, and the 3 mobile apps with the highest crash rate and HTTP error rate each. Each scoring step can hold at most 10,000 characters of data, so the query results are trimmed to these rows. The lists keep the worst items, so the area's status is still right and only counts such as "hosts above 85%" are capped at those numbers. Apps with too few samples or sessions are left out before the worst are picked. There is one exception, below.
 - **The APM "slower than last week" check covers only some services.** It looks at the 12 services with the highest error rate and the 5 slowest by p95. A service outside those two groups that got slower is not flagged amber.
+- **Long text is shortened in the email.** To keep the email step under the 10,000-character limit in any week, alert titles are cut at 80 characters, entity names at 40, sub-rows at 100 and headlines at 100, ending in "...". Double quotes become apostrophes and backslashes become slashes. At most 4 data gaps are listed; any more are counted in a last line.
 - **Autopilot's text varies.** It doesn't always follow the requested format, and it can be wrong. Treat its causes as leads to check, not conclusions.
 - **Charts are dropped.** Autopilot sometimes includes charts, which the email leaves out.
 - **Run cost.** Every run, scheduled or manual, sends an email and uses Autopilot capacity.
