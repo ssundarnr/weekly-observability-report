@@ -201,7 +201,7 @@ def worst_apps(min_token, picks):
 def selector(key, values=None):
     s = SELECTORS[key]
     for token, name in MIN_INPUTS.items():
-        s = s.replace(token, values[name] if values else "${{ .workflowInputs.%s }}" % name)
+        s = s.replace(token, str(values[name]) if values else "${{ .workflowInputs.%s }}" % name)
     return s
 
 
@@ -219,16 +219,19 @@ SELECTORS.update({
                '(.crashes // 0)]) | .[:1]',
 })
 
-# Workflow inputs (strings in WA) that the scoring scripts convert.
+# Workflow inputs. Typed as Float (Int for the minimums): the run form in the WA UI sends numbers, and a String
+# input then fails with "must be of type String" (2026-11-10). The scripts read them with float().
 INPUT_DEFAULTS = {
-    "errRedPct": "5", "errAmberPct": "1", "p95IncreasePct": "20", "minRequests": "100",
-    "hostAmberPct": "85", "hostRedPct": "95", "synthAmberPct": "5", "synthRedPct": "50", "sloAmberBudgetPct": "25",
+    "errRedPct": 5, "errAmberPct": 1, "p95IncreasePct": 20, "minRequests": 100,
+    "hostAmberPct": 85, "hostRedPct": 95, "synthAmberPct": 5, "synthRedPct": 50, "sloAmberBudgetPct": 25,
     # Browser: Google's Core Web Vitals cut-offs at p75 (good up to amber, poor above red); JS errors per 100 page views.
-    "lcpAmberSec": "2.5", "lcpRedSec": "4", "inpAmberMs": "200", "inpRedMs": "500", "clsAmber": "0.1", "clsRed": "0.25",
-    "jsErrAmberPct": "5", "jsErrRedPct": "25", "minBrowserSamples": "20",
+    "lcpAmberSec": 2.5, "lcpRedSec": 4, "inpAmberMs": 200, "inpRedMs": 500, "clsAmber": 0.1, "clsRed": 0.25,
+    "jsErrAmberPct": 5, "jsErrRedPct": 25, "minBrowserSamples": 20,
     # Mobile: crashes per 100 sessions; HTTP errors per 100 requests.
-    "crashAmberPct": "1", "crashRedPct": "3", "mobileHttpAmberPct": "5", "mobileHttpRedPct": "20", "minMobileSessions": "50",
+    "crashAmberPct": 1, "crashRedPct": 3, "mobileHttpAmberPct": 5, "mobileHttpRedPct": 20, "minMobileSessions": 50,
 }
+
+INT_INPUTS = {"minRequests", "minBrowserSamples", "minMobileSessions"}
 
 # What the WA script sandbox rejected in probes (2026-11-04); the real scan may reject more.
 ALLOWED_IMPORTS = {"json"}
@@ -409,7 +412,8 @@ def script_step(name, file_name, input_expr, selectors=""):
 
 
 def build_yaml(stage):
-    inputs = "".join(f"  {k}:\n    type: String\n    required: false\n    defaultValue: '{v}'\n" for k, v in INPUT_DEFAULTS.items())
+    inputs = "".join(f"  {k}:\n    type: {'Int' if k in INT_INPUTS else 'Float'}\n    required: false\n    defaultValue: {v}\n"
+                     for k, v in INPUT_DEFAULTS.items())
     if stage == "full":
         inputs = f"  destinationId:\n    type: String\n    required: false\n    defaultValue: '{DEST_PLACEHOLDER}'\n" + inputs
     out = [f"name: {NAMES[stage]}", "description: Weekly observability report with health summary and Autopilot causes",

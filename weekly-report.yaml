@@ -6,97 +6,97 @@ workflowInputs:
     required: false
     defaultValue: 'REPLACE_WITH_EMAIL_DESTINATION_ID'
   errRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '5'
+    defaultValue: 5
   errAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '1'
+    defaultValue: 1
   p95IncreasePct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '20'
+    defaultValue: 20
   minRequests:
-    type: String
+    type: Int
     required: false
-    defaultValue: '100'
+    defaultValue: 100
   hostAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '85'
+    defaultValue: 85
   hostRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '95'
+    defaultValue: 95
   synthAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '5'
+    defaultValue: 5
   synthRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '50'
+    defaultValue: 50
   sloAmberBudgetPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '25'
+    defaultValue: 25
   lcpAmberSec:
-    type: String
+    type: Float
     required: false
-    defaultValue: '2.5'
+    defaultValue: 2.5
   lcpRedSec:
-    type: String
+    type: Float
     required: false
-    defaultValue: '4'
+    defaultValue: 4
   inpAmberMs:
-    type: String
+    type: Float
     required: false
-    defaultValue: '200'
+    defaultValue: 200
   inpRedMs:
-    type: String
+    type: Float
     required: false
-    defaultValue: '500'
+    defaultValue: 500
   clsAmber:
-    type: String
+    type: Float
     required: false
-    defaultValue: '0.1'
+    defaultValue: 0.1
   clsRed:
-    type: String
+    type: Float
     required: false
-    defaultValue: '0.25'
+    defaultValue: 0.25
   jsErrAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '5'
+    defaultValue: 5
   jsErrRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '25'
+    defaultValue: 25
   minBrowserSamples:
-    type: String
+    type: Int
     required: false
-    defaultValue: '20'
+    defaultValue: 20
   crashAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '1'
+    defaultValue: 1
   crashRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '3'
+    defaultValue: 3
   mobileHttpAmberPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '5'
+    defaultValue: 5
   mobileHttpRedPct:
-    type: String
+    type: Float
     required: false
-    defaultValue: '20'
+    defaultValue: 20
   minMobileSessions:
-    type: String
+    type: Int
     required: false
-    defaultValue: '50'
+    defaultValue: 50
 
 steps:
   - name: q_inc_crit
@@ -330,8 +330,8 @@ steps:
         cut = len(A["e"]) >= 12 and A["e"][-1]["e"] > amb
         print(json.dumps({
             "area": {"key": "apm", "name": "APM services", "status": st,
-                     "headline": "%d of %d services above %s%% errors" % (over, A["n"], C["errAmberPct"]),
-                     "delta": "services above %s%% errors: %d (prev %d)" % (C["errAmberPct"], over, prev),
+                     "headline": "%d of %d services above %g%% errors" % (over, A["n"], f("errAmberPct")),
+                     "delta": "services above %g%% errors: %d (prev %d)" % (f("errAmberPct"), over, prev),
                      "rows": ([lines[0]] + (lines[-1:] if sl and not tp[0]["slow"] else lines[len(te):len(te) + 1])) if lines else [],
                      "refs": ["apm"]},
             "gaps": (["APM: no Transaction events in the Report Window."] if st == "NODATA" else [])
@@ -368,8 +368,8 @@ steps:
         hp = len([p for p in H["pp"] if p > f("hostAmberPct")])
         hl = ["%s: cpu %d%%, memory %d%%, disk %d%%" % (x["h"], x["u"], x["m"], x["d"]) for x in H["top"]]
         areas.append({"key": "hosts", "name": "Hosts", "status": hs,
-                      "headline": "%d of %d hosts peaked above %s%%" % (ho, H["n"], C["hostAmberPct"]),
-                      "delta": "hosts above %s%%: %d (prev %d)" % (C["hostAmberPct"], ho, hp), "rows": hl[:3], "refs": ["hosts"]})
+                      "headline": "%d of %d hosts peaked above %g%%" % (ho, H["n"], f("hostAmberPct")),
+                      "delta": "hosts above %g%%: %d (prev %d)" % (f("hostAmberPct"), ho, hp), "rows": hl[:3], "refs": ["hosts"]})
         # Synthetics
         S, M = I["so"], I["sm"]
         ss = "NODATA" if not EC.get("SyntheticCheck") else "GREEN"
@@ -389,7 +389,7 @@ steps:
             ls = "RED" if L["low"][0]["b"] <= 0 else "AMBER" if L["low"][0]["b"] < f("sloAmberBudgetPct") else "GREEN"
         lo = len([x for x in L["low"] if x["b"] < f("sloAmberBudgetPct")])
         areas.append({"key": "service_levels", "name": "Service levels", "status": ls,
-                      "headline": "%s of %d below %s%% error budget" % (("%d+" % lo) if lo >= len(L["low"]) else lo, L["n"], C["sloAmberBudgetPct"]),
+                      "headline": "%s of %d below %g%% error budget" % (("%d+" % lo) if lo >= len(L["low"]) else lo, L["n"], f("sloAmberBudgetPct")),
                       "delta": "no week-over-week comparison (latest snapshot only)",
                       "rows": ["%s: %d%% error budget left" % (x["n"], x["b"]) for x in L["low"][:3]], "refs": ["sls"]})
         for a, ev in (("Hosts", "SystemSample"), ("Synthetics", "SyntheticCheck"), ("Service levels", "ServiceLevelSnapshot")):
