@@ -233,6 +233,35 @@ INPUT_DEFAULTS = {
 
 INT_INPUTS = {"minRequests", "minBrowserSamples", "minMobileSessions"}
 
+# One line per input, written as a YAML comment above it. Keep in step with the "Workflow inputs" table in the README.
+INPUT_HELP = {
+    "destinationId": "Email destination that receives the report (its ID, from Alerts > Destinations).",
+    "errRedPct": "APM: a service is RED when more than this % of its requests are errors.",
+    "errAmberPct": "APM: a service is AMBER when more than this % of its requests are errors.",
+    "p95IncreasePct": "APM: a service is AMBER when its p95 response time rose more than this % since last week.",
+    "minRequests": "APM: skip services with fewer requests than this in the week (in both weeks, for the p95 check).",
+    "hostAmberPct": "Hosts: a host is AMBER when its peak CPU, memory or disk use is above this %.",
+    "hostRedPct": "Hosts: a host is RED when its peak CPU, memory or disk use is above this %.",
+    "synthAmberPct": "Synthetics: a monitor is AMBER when more than this % of its checks failed.",
+    "synthRedPct": "Synthetics: a monitor is RED when more than this % of its checks failed.",
+    "sloAmberBudgetPct": "Service levels: a service level is AMBER when less than this % of its error budget is left (RED at 0%).",
+    "lcpAmberSec": "Browser: an app is AMBER when its p75 Largest Contentful Paint is above this many seconds.",
+    "lcpRedSec": "Browser: an app is RED when its p75 Largest Contentful Paint is above this many seconds.",
+    "inpAmberMs": "Browser: an app is AMBER when its p75 Interaction to Next Paint is above this many ms.",
+    "inpRedMs": "Browser: an app is RED when its p75 Interaction to Next Paint is above this many ms.",
+    "clsAmber": "Browser: an app is AMBER when its p75 Cumulative Layout Shift score is above this (no unit).",
+    "clsRed": "Browser: an app is RED when its p75 Cumulative Layout Shift score is above this (no unit).",
+    "jsErrAmberPct": "Browser: an app is AMBER when it had more than this many JavaScript errors per 100 page views.",
+    "jsErrRedPct": "Browser: an app is RED when it had more than this many JavaScript errors per 100 page views.",
+    "minBrowserSamples": "Browser: judge a metric only if the app had at least this many samples of it (page views for JS errors).",
+    "crashAmberPct": "Mobile: an app is AMBER when more than this % of its sessions crashed.",
+    "crashRedPct": "Mobile: an app is RED when more than this % of its sessions crashed.",
+    "mobileHttpAmberPct": "Mobile: an app is AMBER when more than this % of its HTTP requests failed.",
+    "mobileHttpRedPct": "Mobile: an app is RED when more than this % of its HTTP requests failed.",
+    "minMobileSessions": "Mobile: skip apps with fewer sessions than this in the week.",
+}
+# Only as comments: WA rejected a `description` field on an input ("Invalid workflow definition format", 2026-11-10).
+
 # What the WA script sandbox rejected in probes (2026-11-04); the real scan may reject more.
 ALLOWED_IMPORTS = {"json"}
 BANNED_NAMES = {"globals", "locals", "eval", "exec", "compile", "open", "__import__", "vars", "dir", "getattr",
@@ -411,11 +440,15 @@ def script_step(name, file_name, input_expr, selectors=""):
             f"      runtime: PYTHON_3_13\n      script: |\n{block(code)}{selectors}")
 
 
+def input_yaml(name, typ, default):
+    return (f"  # {INPUT_HELP[name]}\n  {name}:\n    type: {typ}\n    required: false\n"
+            f"    defaultValue: {default}\n")
+
+
 def build_yaml(stage):
-    inputs = "".join(f"  {k}:\n    type: {'Int' if k in INT_INPUTS else 'Float'}\n    required: false\n    defaultValue: {v}\n"
-                     for k, v in INPUT_DEFAULTS.items())
+    inputs = "".join(input_yaml(k, "Int" if k in INT_INPUTS else "Float", v) for k, v in INPUT_DEFAULTS.items())
     if stage == "full":
-        inputs = f"  destinationId:\n    type: String\n    required: false\n    defaultValue: '{DEST_PLACEHOLDER}'\n" + inputs
+        inputs = input_yaml("destinationId", "String", f"'{DEST_PLACEHOLDER}'") + inputs
     out = [f"name: {NAMES[stage]}", "description: Weekly observability report with health summary and Autopilot causes",
            "workflowInputs:\n" + inputs.rstrip("\n"), "", "steps:"]
     for k, q in QUERIES.items():

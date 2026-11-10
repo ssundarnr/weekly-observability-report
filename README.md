@@ -13,6 +13,7 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 - [Files in this repo](#files-in-this-repo)
 - [What the weekly email report contains](#what-the-weekly-email-report-contains)
 - [How the workflow works](#how-the-workflow-works)
+- [Workflow inputs](#workflow-inputs)
 - [Before you start](#before-you-start)
 - [Set up in the Workflow Automation UI (option 1)](#set-up-in-the-workflow-automation-ui-option-1)
 - [Set up with the Python script (option 2)](#set-up-with-the-python-script-option-2)
@@ -104,7 +105,7 @@ For example, the Browser row of the sample report above:
 | Buying Program Simulator | p75 INP 72 ms, p75 CLS 0.005 | Amber above 200 ms and above 0.1 | Under all thresholds |
 | Buying Program Simulator | 6.06 JavaScript errors per 100 page views | Amber above 5, red above 25 | AMBER |
 
-So the app is AMBER, its worst result, and Browser is AMBER because its worst app is amber. The thresholds are workflow inputs, so you can change them (see [Change things](#change-things)).
+So the app is AMBER, its worst result, and Browser is AMBER because its worst app is amber. The thresholds are workflow inputs, so you can change them (see [Workflow inputs](#workflow-inputs)).
 
 **3. Ask Autopilot why (`ask`, `newrelic.autopilot.run`).**
 - The step sends one prompt containing the health summary and the 3 alert events.
@@ -127,6 +128,39 @@ So the app is AMBER, its worst result, and Browser is AMBER because its worst ap
 - `record` (`newrelic.ingest.sendEvents`) writes the `WeeklyObservabilityReport` event.
 - `save` stores a short run summary: whether Autopilot gave an analysis, and whether the email and the event were sent.
 
+## Workflow inputs
+
+The thresholds are workflow inputs, listed at the top of `weekly-report.yaml`. Each one has a one-line comment above it in the YAML, and this table says the same. In the Workflow Automation run form, the names start with a capital letter, for example `ErrRedPct`.
+
+To change a value for every run, edit its `defaultValue` in the YAML and update the workflow. Each amber value should be lower than its red value.
+
+| Input | Area | What it does | Default |
+|---|---|---|---|
+| `destinationId` | Email | Email destination that receives the report (its ID, from Alerts > Destinations). | None (you must set it) |
+| `errRedPct` | APM | A service is RED when more than this % of its requests are errors. | 5% |
+| `errAmberPct` | APM | A service is AMBER when more than this % of its requests are errors. | 1% |
+| `p95IncreasePct` | APM | A service is AMBER when its p95 response time rose more than this % since last week. | 20% |
+| `minRequests` | APM | Skip services with fewer requests than this in the week (in both weeks, for the p95 check). | 100 |
+| `hostAmberPct` | Hosts | A host is AMBER when its peak CPU, memory or disk use is above this %. | 85% |
+| `hostRedPct` | Hosts | A host is RED when its peak CPU, memory or disk use is above this %. | 95% |
+| `synthAmberPct` | Synthetics | A monitor is AMBER when more than this % of its checks failed. | 5% |
+| `synthRedPct` | Synthetics | A monitor is RED when more than this % of its checks failed. | 50% |
+| `sloAmberBudgetPct` | Service levels | A service level is AMBER when less than this % of its error budget is left (RED at 0%). | 25% |
+| `lcpAmberSec` | Browser | An app is AMBER when its p75 Largest Contentful Paint is above this many seconds. | 2.5 s |
+| `lcpRedSec` | Browser | An app is RED when its p75 Largest Contentful Paint is above this many seconds. | 4 s |
+| `inpAmberMs` | Browser | An app is AMBER when its p75 Interaction to Next Paint is above this many ms. | 200 ms |
+| `inpRedMs` | Browser | An app is RED when its p75 Interaction to Next Paint is above this many ms. | 500 ms |
+| `clsAmber` | Browser | An app is AMBER when its p75 Cumulative Layout Shift score is above this (no unit). | 0.1 |
+| `clsRed` | Browser | An app is RED when its p75 Cumulative Layout Shift score is above this (no unit). | 0.25 |
+| `jsErrAmberPct` | Browser | An app is AMBER when it had more than this many JavaScript errors per 100 page views. | 5 |
+| `jsErrRedPct` | Browser | An app is RED when it had more than this many JavaScript errors per 100 page views. | 25 |
+| `minBrowserSamples` | Browser | Judge a metric only if the app had at least this many samples of it (page views for JS errors). | 20 |
+| `crashAmberPct` | Mobile | An app is AMBER when more than this % of its sessions crashed. | 1% |
+| `crashRedPct` | Mobile | An app is RED when more than this % of its sessions crashed. | 3% |
+| `mobileHttpAmberPct` | Mobile | An app is AMBER when more than this % of its HTTP requests failed. | 5% |
+| `mobileHttpRedPct` | Mobile | An app is RED when more than this % of its HTTP requests failed. | 20% |
+| `minMobileSessions` | Mobile | Skip apps with fewer sessions than this in the week. | 50 |
+
 ## Before you start
 
 - **Workflow Automation** in your account. This needs the Advanced Compute plan.
@@ -142,7 +176,7 @@ So the app is AMBER, its worst result, and Browser is AMBER because its worst ap
 2. In New Relic, open Workflow Automation and create a workflow from the YAML. The exact menu labels may differ in your account.
 3. Run it from the UI. Each step's result appears in the run view.
 
-To change the thresholds, edit the `defaultValue` of the inputs at the top of the YAML (see the list in [Change things](#change-things)), then update the workflow with the new YAML.
+To change the thresholds, edit the `defaultValue` of the inputs at the top of the YAML (each one is explained in [Workflow inputs](#workflow-inputs)), then update the workflow with the new YAML.
 
 ## Set up with the Python script (option 2)
 
@@ -224,7 +258,7 @@ The default is every Monday at 08:00 `Europe/Dublin`. From then on, it emails an
 | To change | Do this |
 |---|---|
 | **The schedule time** | `python weekly_report.py --schedule --cron "30 7 * * 2" --timezone Europe/London --confirm-schedule`. To make it the default, set `NR_REPORT_CRON` and `NR_REPORT_TIMEZONE` in `~/.nr-weekly.env`. The command creates the new schedule, then deletes the old one, because New Relic's API cannot edit a schedule in place. |
-| **The thresholds** | Edit the `defaultValue` of the inputs at the top of `weekly-report.yaml` (for example `errRedPct`, `hostAmberPct`, `synthRedPct`, `lcpRedSec`, `crashAmberPct`), then run `--deploy` again. |
+| **The thresholds** | Edit the `defaultValue` of the inputs at the top of `weekly-report.yaml` (all listed in [Workflow inputs](#workflow-inputs)), then run `--deploy` again. |
 | **Who gets the email** | Use a different `DESTINATION_ID` (a team mailbox works well), then run `--deploy` again. |
 | **After any redeploy** | If a schedule exists, run `--schedule --confirm-schedule` again. A schedule is pinned to one workflow version, so it keeps running the old version until you do. |
 

@@ -1,98 +1,122 @@
 name: weekly-observability-report
 description: Weekly observability report with health summary and Autopilot causes
 workflowInputs:
+  # Email destination that receives the report (its ID, from Alerts > Destinations).
   destinationId:
     type: String
     required: false
     defaultValue: 'REPLACE_WITH_EMAIL_DESTINATION_ID'
+  # APM: a service is RED when more than this % of its requests are errors.
   errRedPct:
     type: Float
     required: false
     defaultValue: 5
+  # APM: a service is AMBER when more than this % of its requests are errors.
   errAmberPct:
     type: Float
     required: false
     defaultValue: 1
+  # APM: a service is AMBER when its p95 response time rose more than this % since last week.
   p95IncreasePct:
     type: Float
     required: false
     defaultValue: 20
+  # APM: skip services with fewer requests than this in the week (in both weeks, for the p95 check).
   minRequests:
     type: Int
     required: false
     defaultValue: 100
+  # Hosts: a host is AMBER when its peak CPU, memory or disk use is above this %.
   hostAmberPct:
     type: Float
     required: false
     defaultValue: 85
+  # Hosts: a host is RED when its peak CPU, memory or disk use is above this %.
   hostRedPct:
     type: Float
     required: false
     defaultValue: 95
+  # Synthetics: a monitor is AMBER when more than this % of its checks failed.
   synthAmberPct:
     type: Float
     required: false
     defaultValue: 5
+  # Synthetics: a monitor is RED when more than this % of its checks failed.
   synthRedPct:
     type: Float
     required: false
     defaultValue: 50
+  # Service levels: a service level is AMBER when less than this % of its error budget is left (RED at 0%).
   sloAmberBudgetPct:
     type: Float
     required: false
     defaultValue: 25
+  # Browser: an app is AMBER when its p75 Largest Contentful Paint is above this many seconds.
   lcpAmberSec:
     type: Float
     required: false
     defaultValue: 2.5
+  # Browser: an app is RED when its p75 Largest Contentful Paint is above this many seconds.
   lcpRedSec:
     type: Float
     required: false
     defaultValue: 4
+  # Browser: an app is AMBER when its p75 Interaction to Next Paint is above this many ms.
   inpAmberMs:
     type: Float
     required: false
     defaultValue: 200
+  # Browser: an app is RED when its p75 Interaction to Next Paint is above this many ms.
   inpRedMs:
     type: Float
     required: false
     defaultValue: 500
+  # Browser: an app is AMBER when its p75 Cumulative Layout Shift score is above this (no unit).
   clsAmber:
     type: Float
     required: false
     defaultValue: 0.1
+  # Browser: an app is RED when its p75 Cumulative Layout Shift score is above this (no unit).
   clsRed:
     type: Float
     required: false
     defaultValue: 0.25
+  # Browser: an app is AMBER when it had more than this many JavaScript errors per 100 page views.
   jsErrAmberPct:
     type: Float
     required: false
     defaultValue: 5
+  # Browser: an app is RED when it had more than this many JavaScript errors per 100 page views.
   jsErrRedPct:
     type: Float
     required: false
     defaultValue: 25
+  # Browser: judge a metric only if the app had at least this many samples of it (page views for JS errors).
   minBrowserSamples:
     type: Int
     required: false
     defaultValue: 20
+  # Mobile: an app is AMBER when more than this % of its sessions crashed.
   crashAmberPct:
     type: Float
     required: false
     defaultValue: 1
+  # Mobile: an app is RED when more than this % of its sessions crashed.
   crashRedPct:
     type: Float
     required: false
     defaultValue: 3
+  # Mobile: an app is AMBER when more than this % of its HTTP requests failed.
   mobileHttpAmberPct:
     type: Float
     required: false
     defaultValue: 5
+  # Mobile: an app is RED when more than this % of its HTTP requests failed.
   mobileHttpRedPct:
     type: Float
     required: false
     defaultValue: 20
+  # Mobile: skip apps with fewer sessions than this in the week.
   minMobileSessions:
     type: Int
     required: false
