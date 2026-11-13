@@ -29,7 +29,7 @@ This sample comes from a New Relic demo account. The whole email, including Auto
 | `README.md` | This guide |
 | `weekly-report.yaml` | The workflow definition, ready to deploy. It works in any account. This is the file to keep and build on. |
 | `weekly_report.py` | An optional command-line helper to deploy, run, and schedule the workflow. It needs Python 3.10+ and nothing else (standard library only). |
-| `docs/` | The sample screenshot and PDF shown above |
+| `docs/` | The sample screenshot and PDF shown above, and the run chart below |
 
 ## What the weekly email report contains
 
@@ -60,6 +60,10 @@ The statuses come from fixed rules, so the same data always gives the same colou
 The Browser thresholds are Google's Core Web Vitals cut-offs. APM services count only if they had at least 100 requests. A browser metric counts only if the app had at least 20 samples of it, and a mobile app counts only if it had at least 50 sessions. If the account has browser or mobile apps but they sent no data this week, the area shows NO DATA and appears under data gaps. If the account has no such apps, the area is left out. "Alert events" are the open-to-close records in `NrAiIncident`, which the New Relic alerts UI calls incidents.
 
 ## How the workflow works
+
+![How one run moves from the numbers to the email: getting the numbers, scoring, asking Autopilot, sending the email, saving the week](docs/run-statechart.png)
+
+One run, from start to finish. Every run is scored before Autopilot is asked, and the email is sent whether or not Autopilot gives an analysis. The chart leaves out failed queries and lookups.
 
 ```
 14 queries → app lookup → account name lookup → 4 scoring scripts → Autopilot → build email → format Autopilot text → send email → save history → save run summary
